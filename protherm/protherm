@@ -1,0 +1,1051 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# Copyright (C) 2015 Niccolo Rigacci
+#
+# Pogrammable Thermostat for the Raspberry Pi, developed and
+# tested on the following hardware:
+# * Raspberry Pi model B
+# * LCD graphical display 84x48 (Nokia 5110-3310)
+# * Temperature sensor DS18B20
+# * Relay Board and push button to be connected to the GPIOs
+# * WiFi USB dongle
+#
+# ProTherm is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# ProTherm is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with ProTherm. If not, see <http://www.gnu.org/licenses/>.
+#
+# Author        Niccolo Rigacci <niccolo@rigacci.org>
+# Version       0.6  2015-12-16
+
+# Required Debian packages:
+# python-daemon python-netifaces
+
+# python-daemon:
+# https://www.python.org/dev/peps/pep-3143/
+# http://python-daemon.sourcearchive.com/documentation/1.5.5-1/
+#
+# Timer:
+# http://stackoverflow.com/questions/8600161/executing-periodic-actions-in-python
+#
+# LCD display:
+# https://learn.adafruit.com/nokia-5110-3310-lcd-python-library/wiring
+#
+# GPIO programming:
+# http://makezine.com/projects/tutorial-raspberry-pi-gpio-pins-and-python/
+#
+# Relay:
+# http://arduino-info.wikispaces.com/RelayIsolation
+#
+# Temperature sensor DS18B20 (range from -55°C to +125°C):
+# https://www.cl.cam.ac.uk/projects/raspberrypi/tutorials/temperature/
+#
+# Buttons:
+# http://sourceforge.net/p/raspberry-gpio-python/wiki/Inputs/
+
+import ConfigParser, daemon, daemon.pidlockfile, signal, threading
+import logging, logging.handlers
+import bisect, netifaces, os, re, sys, tempfile, time
+import socket, SocketServer
+
+import RPi.GPIO as GPIO
+
+import Adafruit_Nokia_LCD as LCD
+import Adafruit_GPIO.SPI as SPI
+
+from PIL import Image
+from PIL import ImageDraw
+from PIL import ImageFont
+
+# This is the program name.
+PROG_NAME = "protherm"
+# Read runtime and other configuration from this file.
+CFG_FILE = "/etc/%s.cfg" % (PROG_NAME)
+
+#-------------------------------------------------------------------------
+# Runtime configuration.
+#-------------------------------------------------------------------------
+#Temperature sensor device ID.
+TEMP_SENSOR = "/sys/bus/w1/devices/28-0000067bc546/w1_slave"
+
+# Raspberry Pi hardware SPI config for Nokia LCD.
+LCD_ENABLED = True
+LCD_CONTRAST = 55
+LCD_DC = 23
+LCD_RST = 24
+LCD_SPI_PORT = 0
+LCD_SPI_DEVICE = 0
+
+# GPIO connected to button.
+BUTTON1_GPIO = 18
+BUTTON1_ENABLED = True
+# Button connects the GPIO to 3.3 v (active high) or to ground.
+BUTTON1_ACTIVE_HIGH = False
+
+# GPIO connected to switch relays.
+SWITCH1_GPIO = 14
+SWITCH2_GPIO = 15
+# Relay module board uses "active high" signaling.
+RELAY_ACTIVE_HIGH = False
+
+# Networking.
+WIRED_IFACE = "eth0"
+WIFI_IFACE = "wlan0"
+# Link quality reported by iwconfig, usually is 100-based.
+WIFI_QUALITY_SCALE = 100
+
+# Default temperature, if no program is defined.
+DEFAULT_TEMPERATURE = 10.0
+
+# Use Celsius or Fahrenheit ("C" or "F").
+DEGREES_UNIT = "C"
+
+#-------------------------------------------------------------------------
+# Other configuration.
+#-------------------------------------------------------------------------
+# Hysteresis times before changing switch state.
+SWITCH1_HYSTERESIS = 300   # Hysteresis in program mode
+MANUAL_HYSTERESIS  = 20    # Hysteresis in manual (ON/OFF) mode
+BUTTON1_HYSTERESIS = 20    # Hysteresis after pressing button
+
+# Two manual modes (off, on), others are program modes.
+MODES = {0: "MANUAL OFF", 1: "MANUAL ON", 2: "PROG1", 3: "PROG2", 4: "PROG3"}
+MANUAL_MODES = [0, 1]
+MODE_MANUAL_OFF = 0
+MODE_DEFAULT = 2
+
+# Run as a daemon and logging options.
+BE_DAEMON = True
+# From logging module: NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = "INFO"
+# False for syslog logging, filename for file logging.
+LOG_TO_FILE = False
+#LOG_TO_FILE = "/var/log/protherm.log"
+
+# Listen to TCP port for commands.
+BIND_ADDR = '127.0.0.1'
+TCP_PORT = 7438
+
+#-------------------------------------------------------------------------
+# System configuration.
+#-------------------------------------------------------------------------
+LOG_FMT_SYSLOG = '%(module)s: %(levelname)s %(message)s'
+LOG_FMT_FILE   = '%(asctime)s %(levelname)s %(message)s'
+LOG_FMT_DATE   = '%Y-%m-%d %H:%M:%S'
+
+PID_FILE  = "/var/run/%s.pid" % (PROG_NAME)
+SHM_DIR   = "/run/shm/%s" % (PROG_NAME)			# Use shared memory!
+SHM_STATS = "stats"					# Statistics file
+SHM_RRA   = os.path.join(SHM_DIR, "rra")		# Round Robin Archive
+SHM_IMG   = os.path.join(SHM_DIR, "lcd.png")		# Exported image of LCD
+FONTS_DIR = "/usr/local/share/fonts"
+ICONS_DIR = "/usr/local/share/icons"
+DATA_DIR  = "/usr/local/lib/%s" % (PROG_NAME)
+CURR_MODE = "current_mode"
+
+# Where to read networking stats.
+IFACE_CARRIER = "/sys/class/net/%s/carrier"
+WIFI_DATA = "/proc/net/wireless"
+
+#-------------------------------------------------------------------------
+# Read configuration file. Beware: only string values!
+#-------------------------------------------------------------------------
+DEFAULTS = {
+    "TEMP_SENSOR":         str(TEMP_SENSOR),
+    "LCD_ENABLED":         str(LCD_ENABLED),
+    "LCD_CONTRAST":        str(LCD_CONTRAST),
+    "LCD_DC":              str(LCD_DC),
+    "LCD_RST":             str(LCD_RST),
+    "LCD_SPI_PORT":        str(LCD_SPI_PORT),
+    "LCD_SPI_DEVICE":      str(LCD_SPI_DEVICE),
+    "BUTTON1_GPIO":        str(BUTTON1_GPIO),
+    "BUTTON1_ENABLED":     str(BUTTON1_ENABLED),
+    "BUTTON1_ACTIVE_HIGH": str(BUTTON1_ACTIVE_HIGH),
+    "SWITCH1_GPIO":        str(SWITCH1_GPIO),
+    "SWITCH2_GPIO":        str(SWITCH2_GPIO),
+    "RELAY_ACTIVE_HIGH":   str(RELAY_ACTIVE_HIGH),
+    "WIRED_IFACE":         str(WIRED_IFACE),
+    "WIFI_IFACE":          str(WIFI_IFACE),
+    "WIFI_QUALITY_SCALE":  str(WIFI_QUALITY_SCALE),
+    "DEFAULT_TEMPERATURE": str(DEFAULT_TEMPERATURE),
+    "DEGREES_UNIT":        str(DEGREES_UNIT),
+    "SWITCH1_HYSTERESIS":  str(SWITCH1_HYSTERESIS),
+    "MANUAL_HYSTERESIS":   str(MANUAL_HYSTERESIS),
+    "BUTTON1_HYSTERESIS":  str(BUTTON1_HYSTERESIS),
+    "BE_DAEMON":           str(BE_DAEMON),
+    "LOG_LEVEL":           str(LOG_LEVEL),
+    "LOG_TO_FILE":         str(LOG_TO_FILE),
+    "BIND_ADDR":           str(BIND_ADDR),
+    "TCP_PORT":            str(TCP_PORT)
+}
+
+# Parse configuration file. We use just one [PROG_NAME] section.
+config = ConfigParser.RawConfigParser(DEFAULTS)
+config.read(CFG_FILE)
+if not PROG_NAME in config.sections():
+    config.add_section(PROG_NAME)
+
+TEMP_SENSOR         = config.get(PROG_NAME, "TEMP_SENSOR")
+LCD_ENABLED         = config.getboolean(PROG_NAME, "LCD_ENABLED")
+LCD_CONTRAST        = config.getint(PROG_NAME, "LCD_CONTRAST")
+LCD_DC              = config.getint(PROG_NAME, "LCD_DC")
+LCD_RST             = config.getint(PROG_NAME, "LCD_RST")
+LCD_SPI_PORT        = config.getint(PROG_NAME, "LCD_SPI_PORT")
+LCD_SPI_DEVICE      = config.getint(PROG_NAME, "LCD_SPI_DEVICE")
+BUTTON1_GPIO        = config.getint(PROG_NAME, "BUTTON1_GPIO")
+BUTTON1_ENABLED     = config.getboolean(PROG_NAME, "BUTTON1_ENABLED")
+BUTTON1_ACTIVE_HIGH = config.getboolean(PROG_NAME, "BUTTON1_ACTIVE_HIGH")
+SWITCH1_GPIO        = config.getint(PROG_NAME, "SWITCH1_GPIO")
+SWITCH2_GPIO        = config.getint(PROG_NAME, "SWITCH2_GPIO")
+RELAY_ACTIVE_HIGH   = config.getboolean(PROG_NAME, "RELAY_ACTIVE_HIGH")
+WIRED_IFACE         = config.get(PROG_NAME, "WIRED_IFACE")
+WIFI_IFACE          = config.get(PROG_NAME, "WIFI_IFACE")
+WIFI_QUALITY_SCALE  = config.getint(PROG_NAME, "WIFI_QUALITY_SCALE")
+DEFAULT_TEMPERATURE = config.getfloat(PROG_NAME, "DEFAULT_TEMPERATURE")
+DEGREES_UNIT        = config.get(PROG_NAME, "DEGREES_UNIT")
+SWITCH1_HYSTERESIS  = config.getint(PROG_NAME, "SWITCH1_HYSTERESIS")
+MANUAL_HYSTERESIS   = config.getint(PROG_NAME, "MANUAL_HYSTERESIS")
+BUTTON1_HYSTERESIS  = config.getint(PROG_NAME, "BUTTON1_HYSTERESIS")
+BE_DAEMON           = config.getboolean(PROG_NAME, "BE_DAEMON")
+LOG_LEVEL           = config.get(PROG_NAME, "LOG_LEVEL")
+LOG_TO_FILE         = config.get(PROG_NAME, "LOG_TO_FILE")
+BIND_ADDR           = config.get(PROG_NAME, "BIND_ADDR")
+TCP_PORT            = config.getint(PROG_NAME, "TCP_PORT")
+
+# Convert some options from str to other data types.
+log_levels = {
+    "NOTSET": logging.NOTSET,
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.ERROR
+}
+LOG_LEVEL = log_levels[LOG_LEVEL]
+if LOG_TO_FILE == "False": LOG_TO_FILE = False
+
+if DEGREES_UNIT != "F": DEGREES_UNIT = "C"
+
+# Realy state is active-high or active-low.
+RELAY_ON  = RELAY_ACTIVE_HIGH
+RELAY_OFF = not RELAY_ACTIVE_HIGH
+
+#-------------------------------------------------------------------------
+# Global variables.
+#-------------------------------------------------------------------------
+# Current mode, used as an index of MODES array.
+current_mode = None
+# Programs loaded from files, indexed by current_mode.
+programs = {}
+
+lcd_disp  = None
+lcd_draw  = None
+lcd_image = None
+lcd_font  = {}
+lcd_icon  = {}
+
+network_iface = None
+network_addr = None
+network_strength = None
+
+timer1_next_call = None
+timer1_thread = None
+
+timer2_next_call = None
+timer2_thread = None
+
+gauge1_value = None
+gauge1_required = None
+
+switch1_last_change = None
+switch1_state = None
+
+button1_last_press = None
+
+exit_program = False
+
+#-------------------------------------------------------------------------
+# Handler for TCP request.
+#-------------------------------------------------------------------------
+class socket_tcp_handler(SocketServer.StreamRequestHandler):
+    # Allow very few time for client to send command.
+    timeout = 5
+    def handle(self):
+        try:
+            self.data = self.request.recv(1024).strip()
+            msg = u"TCP client %s sent command '%s'" % (self.client_address[0], self.data)
+            if self.data.upper() == 'STATS':
+                logging.debug(msg)
+                self.request.sendall(get_stats())
+            elif self.data.upper() == 'MODES':
+                logging.debug(msg)
+                self.request.sendall(",".join([value for (key, value) in sorted(MODES.items())]))
+            elif self.data.upper() == 'PROGS':
+                logging.debug(msg)
+                progs = [value for key, value in MODES.iteritems() if key not in MANUAL_MODES]
+                self.request.sendall(",".join(progs))
+            elif self.data.upper().startswith('SET '):
+                requested_mode = self.data[4:]
+                if requested_mode in MODES.values():
+                    # Search MODES dictionary key by value.
+                    n = dict((v, k) for k, v in MODES.iteritems())[requested_mode]
+                    msg += u". Mode '%s' = %d" % (requested_mode, n)
+                    logging.info(msg)
+                    self.request.sendall(u"OK: Setting mode \"%s\"" % (requested_mode))
+                    mode_change(n)
+                else:
+                    self.request.sendall(u"ERROR: Mode \"%s\" does not exists" % (requested_mode))
+            else:
+                logging.info(msg)
+                self.request.sendall(u'Error: command not recognized\n')
+        except (socket.timeout):
+            logging.error(u"Socket timeout")
+        except:
+            logging.error(u"Unexpected error in socket handling: '%s'" % (sys.exc_info()[0]))
+        finally:
+            self.request.close()
+
+#-------------------------------------------------------------------------
+# Prepare shared memory directory (so some sanity checks).
+#-------------------------------------------------------------------------
+def shm_initialize():
+
+    # Check/create shared memory directory.
+    if os.path.islink(SHM_DIR):
+        logging.warning("Not using unsafe symbolic link '%s'" % (SHM_DIR))
+        return
+    if not os.path.exists(SHM_DIR):
+        logging.debug("Creating shared memory directory '%s'" % (SHM_DIR))
+        try:
+            os.mkdir(SHM_DIR, 0755)
+        except:
+            logging.error("Cannot create shared memory directory '%s'" % (SHM_DIR))
+    if not os.path.isdir(SHM_DIR):
+        logging.error("Problem using shared memory directory '%s'" % (SHM_DIR))
+        return
+
+    # Check/create RRD directory.
+    if os.path.islink(SHM_RRA):
+        logging.warning("Removing unsafe symbolic link '%s'" % (SHM_RRA))
+        try:
+            os.remove(SHM_RRA)
+        except:
+            logging.error("Cannot remove symbolic link '%s'" % (SHM_RRA))
+            logging.warning("Unsafe symbolic link '%s' still exists!" % (SHM_RRA))
+    if not os.path.isdir(SHM_RRA):
+        try:
+            os.mkdir(SHM_RRA, 0755)
+        except:
+            logging.error("Cannot create directory '%s'" % (SHM_RRA))
+
+#-------------------------------------------------------------------------
+# Load programmed temperatures from file. Return a sorted list.
+#-------------------------------------------------------------------------
+def load_program(prog_n):
+
+    filename = os.path.join(DATA_DIR, "%s.txt" % (MODES[prog_n]))
+    # Make a dictionary of {time: temperature} to avoid duplicate keys,
+    # fill it with at least the first value.
+    temperatures = {0: DEFAULT_TEMPERATURE}
+    try:
+        f = open(filename, "r")
+    except:
+        logging.error("Error reading file '%s'" % (filename))
+    else:
+        try:
+            p = re.compile("^(\d)\s+(\d\d):(\d\d)\s+(\d+\.\d+)$")
+            n = 0
+            for line in f.readlines():
+                n += 1
+                line = line.strip()
+                if line.startswith("#") or line == "":
+                    continue
+                m = p.match(line.strip())
+                if m:
+                    weekday = int(m.group(1))
+                    hours   = int(m.group(2))
+                    minutes = int(m.group(3))
+                    temp    = float(m.group(4))
+                    if weekday < 0 or weekday > 6:
+                        logging.warning("Program '%s': invalid day of week at line %d" % (MODES[prog_n], n))
+                        continue
+                    if hours < 0 or hours > 23:
+                        logging.warning("Program '%s': invalid hours at line %d" % (MODES[prog_n], n))
+                        continue
+                    if minutes < 0 or minutes > 59:
+                        logging.warning("Program '%s': invalid minutes at line %d" %(MODES[prog_n], n))
+                        continue
+                    time_minute = weekday * (24 * 60) + hours * 60 + minutes
+                    temperatures[time_minute] = temp
+                else:
+                    logging.warning("Program '%s': invalid format at line %d" % (MODES[prog_n], n))
+            f.close()
+        except:
+            pass
+
+    # Make a sorted list, for bisect searches.
+    program = []
+    for minute in sorted(temperatures.keys()):
+        program.append((minute, temperatures[minute]))
+    return program
+
+#-------------------------------------------------------------------------
+# (Re)load all programs from files.
+#-------------------------------------------------------------------------
+def load_all_programs():
+
+    global programs
+
+    logging.info("Loading programs from files")
+    for m in sorted(MODES):
+        if m in MANUAL_MODES:
+            continue
+        else:
+            programs[m] = load_program(m)
+
+#-------------------------------------------------------------------------
+# Search programs from programmed temperature.
+#-------------------------------------------------------------------------
+def programmed_temp(time):
+
+    global programs, current_mode
+
+    if current_mode in MANUAL_MODES:
+        return None
+    else:
+        program = programs[current_mode]
+        minute = time.tm_wday * (24 * 60) + time.tm_hour * 60 + time.tm_min
+        logging.debug("Searching minute %s in program '%s'" % (minute, MODES[current_mode]))
+        keys = [r[0] for r in program]
+        if minute >= keys[-1]:
+            index = len(keys) - 1
+        else:
+            index = bisect.bisect_right(keys, minute) - 1
+        return program[index][1]
+
+#-------------------------------------------------------------------------
+# Read gauge1 float value, return None if not available or error.
+#-------------------------------------------------------------------------
+def gauge1_read():
+
+    global gauge1_value
+
+    new_value = None
+    try:
+        f = open(TEMP_SENSOR, "r")
+    except:
+        pass
+    else:
+        try:
+            data = f.readline().split()
+            data = f.readline().split()
+            logging.debug("Temperature raw data is '%s'" % (data[9]))
+            if data[9].startswith("t="):
+                # TODO: avoid error if data[9] is not int.
+                new_value = float(data[9][2:]) / 1000
+            f.close()
+        except:
+            pass
+    gauge1_value = new_value
+
+    if gauge1_value != None:
+        logging.debug("Value of gauge1 is %.1f" %(gauge1_value))
+    else:
+        logging.debug("Error reading gauge1")
+    return gauge1_value
+
+#-------------------------------------------------------------------------
+# Initialize the LCD display.
+#-------------------------------------------------------------------------
+def lcd_initialize():
+
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+
+    if LCD_ENABLED:
+        lcd_disp = LCD.PCD8544(LCD_DC, LCD_RST, spi=SPI.SpiDev(LCD_SPI_PORT, LCD_SPI_DEVICE, max_speed_hz=3000000))
+        lcd_disp.begin(contrast=LCD_CONTRAST)
+        lcd_disp.clear()
+        lcd_disp.display()
+
+    # Create an image buffer and get the drawable object.
+    lcd_image = Image.new('1', (LCD.LCDWIDTH, LCD.LCDHEIGHT))
+    lcd_draw = ImageDraw.Draw(lcd_image)
+    # Draw a white filled box to clear the image.
+    lcd_draw.rectangle((0,0,LCD.LCDWIDTH,LCD.LCDHEIGHT), outline=255, fill=255)
+
+    # Load some fonts.
+    lcd_font['bcmp16'] = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'), 16)
+    lcd_font['bcnd16'] = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),  16)
+    lcd_font['bcmp8']  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'),  8)
+    lcd_font['bcnd8']  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),   8)
+    lcd_font['cnd8']   = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed.ttf'),        8)
+
+    # Load some icons and convert to 1 bit color.
+    lcd_icon['fire']    = Image.open(os.path.join(ICONS_DIR, 'fire.ppm')).convert('1')
+    lcd_icon['blank']   = Image.open(os.path.join(ICONS_DIR, 'blank.ppm')).convert('1')
+    lcd_icon['ethlink'] = Image.open(os.path.join(ICONS_DIR, 'ethlink.ppm')).convert('1')
+    for n in (0, 25, 50, 75, 100):
+        icon = u"signal%03d" % (n)
+        file = u"signal%03d.ppm" % (n)
+        lcd_icon[icon] = Image.open(os.path.join(ICONS_DIR, file)).convert('1')
+
+#-------------------------------------------------------------------------
+# Sometimes the LCD gets corrupted (power problem?): workaround.
+#-------------------------------------------------------------------------
+def lcd_reset():
+    global network_addr, network_strength, lcd_disp
+    logging.debug("Reset LCD display")
+    # Unset network data to force display refresh.
+    network_addr = None
+    network_strength = None
+    if LCD_ENABLED:
+        lcd_disp.reset()
+        lcd_disp.begin(contrast=LCD_CONTRAST)
+        lcd_disp.clear()
+
+#-------------------------------------------------------------------------
+# Show system info, e.g. CPU load, etc.
+#-------------------------------------------------------------------------
+def display_sys():
+
+    global lcd_disp, lcd_draw, lcd_image, lcd_font
+
+    load = u"CPU: %.2f" % (os.getloadavg()[0])
+    lcd_draw.rectangle((0, 32, 43, 38), outline=255, fill=255)
+    lcd_draw.text((0, 28), load[0:10], font=lcd_font['cnd8'])
+    if LCD_ENABLED:
+        lcd_disp.image(lcd_image)
+        lcd_disp.display()
+
+#-------------------------------------------------------------------------
+# Show temperature (gauge1) on LCD.
+#-------------------------------------------------------------------------
+def display_temperature():
+
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global gauge1_value
+
+    # Range from -55.0 to 125.0 Celsius.
+    if isinstance(gauge1_value, int) or isinstance(gauge1_value, float):
+        if DEGREES_UNIT == "F":
+            display_value = (gauge1_value * 9.0 / 5.0) + 32.0
+        else:
+            display_value = gauge1_value
+        label = u"%.1f °%s" % (display_value, DEGREES_UNIT)
+    else:
+        label = u"N/A °%s" % (DEGREES_UNIT)
+    lcd_draw.rectangle((0, 0, LCD.LCDWIDTH - 1, 13), outline=255, fill=255)
+    lcd_draw.text((0, -8), label, font=lcd_font['bcnd16'])
+    if LCD_ENABLED:
+        lcd_disp.image(lcd_image)
+        lcd_disp.display()
+
+#-------------------------------------------------------------------------
+# Show status of switch1 (fire) on LCD.
+#-------------------------------------------------------------------------
+def display_switch1(status):
+
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+
+    if status:
+        icon = 'fire'
+    else:
+        icon = 'blank'
+    lcd_image.paste(lcd_icon[icon], (LCD.LCDWIDTH - 32, LCD.LCDHEIGHT - 16))
+    if LCD_ENABLED:
+        lcd_disp.image(lcd_image)
+        lcd_disp.display()
+
+#-------------------------------------------------------------------------
+# Get carrier status from network interface.
+#-------------------------------------------------------------------------
+def carrier_status(ifname):
+
+    carrier = "0"
+    try:
+        f = open(IFACE_CARRIER % (ifname), "r")
+    except:
+        pass
+    else:
+        try:
+            carrier = f.readline().strip()
+            f.close()
+        except:
+            pass
+
+    logging.debug("Carrier of interface %s is %s" % (ifname, carrier))
+    if carrier == "1":
+        return 1
+    else:
+        return 0
+
+#-------------------------------------------------------------------------
+# Return the quality (0 - 100) of wireless interface link.
+#-------------------------------------------------------------------------
+def wifi_quality(ifname):
+    strength = 0
+    ifname_tag = ifname + ":"
+    try:
+        f = open(WIFI_DATA, "r")
+        for line in f.readlines():
+            data = line.strip().split()
+            if data[0] == ifname_tag:
+                # TODO: avoid error if data[2] is not float.
+                logging.debug("WiFi signal quality for %s is '%s' (raw data)" % (ifname, data[2]))
+                strength = int(float(data[2]) / WIFI_QUALITY_SCALE * 100)
+                if strength < 0:   strength = 0
+                if strength > 100: strength = 100
+                break
+        f.close()
+    except:
+        pass
+    return strength
+
+#-------------------------------------------------------------------------
+# Get the network signal strength, range 0 - 100 (Ethernet is 100%).
+#-------------------------------------------------------------------------
+def network_status_update():
+
+    global network_iface, network_addr, network_strength
+
+    if carrier_status(WIRED_IFACE) == 1:
+        network_iface = WIRED_IFACE
+        network_strength = 100
+    elif carrier_status(WIFI_IFACE) == 1:
+        network_iface = WIFI_IFACE
+        network_strength = wifi_quality(WIFI_IFACE)
+    else:
+        network_iface = None
+        network_strength = 0
+    try:
+        network_addr = netifaces.ifaddresses(network_iface)[netifaces.AF_INET][0]['addr']
+    except:
+        network_addr = "Address N/A"
+
+#-------------------------------------------------------------------------
+# Show network data: IP address, signal strength diagram, etc.
+#-------------------------------------------------------------------------
+def display_network():
+
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global network_iface, network_addr, network_strength
+
+    old_iface    = network_iface
+    old_addr     = network_addr
+    old_strength = network_strength
+    network_status_update()
+
+    # IP address.
+    if network_addr != old_addr:
+        lcd_draw.rectangle((0, 24, 80, 30), outline=255, fill=255)
+        lcd_draw.text((0, 20), u"IP: %s" % (network_addr), font=lcd_font['cnd8'])
+        if LCD_ENABLED:
+            lcd_disp.image(lcd_image)
+            lcd_disp.display()
+
+    # Signal strength.
+    if network_strength != old_strength or network_iface != old_iface:
+        if network_iface == WIFI_IFACE:
+            normalized = int(round((network_strength / 25.0), 0) * 25)
+            icon = u"signal%03d" % (normalized)
+        elif network_iface == WIRED_IFACE:
+            icon = u"ethlink"
+        else:
+            icon = u"blank"
+        lcd_image.paste(lcd_icon[icon], (LCD.LCDWIDTH - 16, LCD.LCDHEIGHT - 16))
+        if LCD_ENABLED:
+            lcd_disp.image(lcd_image)
+            lcd_disp.display()
+
+#-------------------------------------------------------------------------
+# Show mode (program, manual ON, manual OFF).
+#-------------------------------------------------------------------------
+def display_mode():
+
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global gauge1_required, current_mode
+
+    if current_mode in MANUAL_MODES:
+        label = MODES[current_mode]
+    else:
+        label = u"%s => %.1f °%s" % (MODES[current_mode], gauge1_required, DEGREES_UNIT)
+
+    lcd_draw.rectangle((0, 15, 83, 21), outline=255, fill=255)
+    lcd_draw.text((0, 11), label, font=lcd_font['bcnd8'])
+    if LCD_ENABLED:
+        lcd_disp.image(lcd_image)
+        lcd_disp.display()
+
+#-------------------------------------------------------------------------
+# Show the clock on LCD.
+#-------------------------------------------------------------------------
+def display_clock():
+
+    lcd_draw.rectangle((0, 41, 40, LCD.LCDHEIGHT - 1), outline=255, fill=255)
+    lcd_draw.text((0,37), time.strftime(u"%H:%M:%S"), font=lcd_font['bcmp8'], fill=0)
+    if LCD_ENABLED:
+        lcd_disp.image(lcd_image)
+        lcd_disp.display()
+
+#-------------------------------------------------------------------------
+# Cycle through all modes (manual, prog, etc.)
+#-------------------------------------------------------------------------
+def mode_cycle():
+
+    global current_mode
+
+    if current_mode >= (len(MODES) - 1):
+        mode_change(0)
+    else:
+        mode_change(current_mode + 1)
+
+#-------------------------------------------------------------------------
+# Set a new manual or program mode (index of MODES dictionary).
+#-------------------------------------------------------------------------
+def mode_change(mode):
+
+    global current_mode, gauge1_required, button1_last_press
+
+    if (not mode in MODES.keys()):
+        logging.error("Invalid mode %d requested" % (mode))
+        return
+
+    current_mode = mode;
+    logging.info("Changing mode to '%s'" % (MODES[current_mode]))
+    button1_last_press = time.time()
+
+    # Write down current mode to file.
+    filename = os.path.join(DATA_DIR, CURR_MODE)
+    try:
+        f = open(filename, "w")
+        f.write("%d\n" % (current_mode))
+        f.close()
+    except:
+        logging.error("Error writing file '%s'" % (filename))
+
+    gauge1_required = programmed_temp(time.localtime())
+    export_status()
+    display_mode()
+
+#-------------------------------------------------------------------------
+# Interrupt driven handler for button #1 press.
+#-------------------------------------------------------------------------
+def button1_handler(gpio):
+    logging.info("Executing button1_handler()")
+    mode_cycle()
+
+#-------------------------------------------------------------------------
+# Timer #1: update display clock.
+#-------------------------------------------------------------------------
+def timer1():
+
+    global timer1_next_call
+    global timer1_thread
+    timer1_interval = 1
+
+    logging.debug("Executing timer1()")
+    # Update clock display.
+    display_clock()
+    timer1_next_call = timer1_next_call + timer1_interval
+    # TODO: what if next call time is already due?
+    timer1_thread = threading.Timer(timer1_next_call - time.time(), timer1)
+    timer1_thread.start()
+
+
+#-------------------------------------------------------------------------
+# Timer #2: update temp sensor (gauge1) and relay switch (switch1)
+#-------------------------------------------------------------------------
+def timer2():
+
+    global timer2_next_call, timer2_thread
+    global switch1_last_change, switch1_state
+    global gauge1_value, gauge1_required, current_mode
+    global button1_last_press
+
+    timer2_interval = 5
+
+    logging.debug("Executing timer2()")
+    # Update system information data display.
+    display_sys()
+    # Update network data display.
+    display_network()
+    # Update temperature display.
+    gauge1_value = gauge1_read()
+    display_temperature()
+    # Update mode display.
+    gauge1_required = programmed_temp(time.localtime())
+    display_mode()
+
+    logging.debug("Temperature is %s, required %s" %(gauge1_value, gauge1_required))
+
+    if current_mode in MANUAL_MODES:
+        # Manual modes.
+        if current_mode == MODE_MANUAL_OFF:
+            manual_state = RELAY_OFF
+        else:
+            manual_state = RELAY_ON
+        if manual_state != switch1_state:
+            hyst1 = time.time() - switch1_last_change
+            hyst2 = time.time() - button1_last_press
+            if (hyst1 < MANUAL_HYSTERESIS or hyst2 < BUTTON1_HYSTERESIS):
+                logging.debug("Waiting hysteresis before toggling switch1")
+            else:
+                switch1_state = manual_state
+                logging.info("Setting switch1 to %s, mode '%s'" % (switch1_state == RELAY_ON, MODES[current_mode]))
+                # Update switch1 status display.
+                display_switch1(switch1_state == RELAY_ON)
+                GPIO.output(SWITCH1_GPIO, switch1_state)
+                switch1_last_change = time.time()
+    elif (gauge1_value != None and gauge1_required != None):
+        # Program modes.
+        if (gauge1_value >= gauge1_required and switch1_state == RELAY_ON) or (gauge1_value < gauge1_required and switch1_state == RELAY_OFF):
+            hyst1 = time.time() - switch1_last_change
+            hyst2 = time.time() - button1_last_press
+            if (hyst1 < SWITCH1_HYSTERESIS or hyst2 < BUTTON1_HYSTERESIS):
+                logging.debug("Waiting hysteresis before toggling switch1")
+            else:
+                switch1_state = not switch1_state
+                logging.info("Temperature is %.2f, '%s' requires %.2f, setting switch1 to %s" % (gauge1_value, MODES[current_mode], gauge1_required, switch1_state == RELAY_ON))
+                # Update switch1 status display.
+                display_switch1(switch1_state == RELAY_ON)
+                GPIO.output(SWITCH1_GPIO, switch1_state)
+                switch1_last_change = time.time()
+
+    export_status()
+    timer2_next_call = timer2_next_call + timer2_interval
+    timer2_thread = threading.Timer(timer2_next_call - time.time(), timer2)
+    timer2_thread.start()
+
+#-------------------------------------------------------------------------
+# Main program loop.
+#-------------------------------------------------------------------------
+def program_main():
+
+    global exit_program
+    global timer1_thread, timer1_next_call
+    global timer2_thread, timer2_next_call
+    global switch1_state, switch1_last_change
+    global button1_last_press
+    global current_mode, programs
+
+    os.umask (022)
+    shm_initialize()
+    load_all_programs()
+
+    logging.info("Setting GPIO mode and default state")
+    # GPIO access using Raspberry Pi Python library.
+    GPIO.setmode(GPIO.BCM)
+    # Suppress "This channel is already in use" warning, if restart after crash.
+    GPIO.setwarnings(False)
+    # Setup relays GPIOs as output and turn off them.
+    GPIO.setup((SWITCH1_GPIO, SWITCH2_GPIO), GPIO.OUT)
+    GPIO.output((SWITCH1_GPIO, SWITCH2_GPIO), RELAY_OFF)
+    # Set button GPIO as input, default state via software PULL-UP/DOWN.
+    if BUTTON1_ACTIVE_HIGH:
+        GPIO.setup(BUTTON1_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    else:
+        GPIO.setup(BUTTON1_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    current_mode = MODE_DEFAULT
+    filename = os.path.join(DATA_DIR, CURR_MODE)
+    logging.info("Reading current mode from '%s'" % (filename))
+    try:
+        f = open(filename, "r")
+        current_mode = int(f.read().strip())
+        f.close()
+    except:
+        logging.error("Error reading file '%s'" % (filename))
+    logging.info("Mode is '%s'" % (MODES[current_mode]))
+
+    if BUTTON1_ENABLED:
+        logging.info("Adding button #1 handler")
+        if BUTTON1_ACTIVE_HIGH:
+            GPIO.add_event_detect(BUTTON1_GPIO, GPIO.RISING, callback=button1_handler, bouncetime=300)
+        else:
+            GPIO.add_event_detect(BUTTON1_GPIO, GPIO.FALLING, callback=button1_handler, bouncetime=300)
+
+    logging.info("Starting timer #1 for display clock")
+    timer1_next_call = time.time()
+    timer1()
+
+    logging.info("Starting timer #2 for temp sensor and relay switch")
+    switch1_state = RELAY_OFF
+    switch1_last_change = time.time() - SWITCH1_HYSTERESIS
+    button1_last_press = time.time()
+    timer2_next_call = time.time()
+    timer2()
+
+    # Initialize a TCP socket and run it in a separate thread.
+    tcp_server = None
+    if TCP_PORT != 0:
+        logging.info("Starting TCP socket on %s:%s" % (BIND_ADDR, TCP_PORT))
+        try:
+            SocketServer.TCPServer.allow_reuse_address = True
+            tcp_server = SocketServer.TCPServer((BIND_ADDR, TCP_PORT), socket_tcp_handler)
+            th = threading.Thread(target=tcp_server.serve_forever)
+            th.daemon = True
+            th.start()
+        except:
+            logging.error("Cannot open TCP socket: %s" % (sys.exc_info()[0]))
+            tcp_server = None
+
+
+    while not exit_program:
+        # TODO: switch to off-line mode if NTP time is missing.
+        logging.debug("Idle in main loop")
+        try:
+            time.sleep(180)
+            # This is a workaround for a buggy LCD display...
+            lcd_reset()
+        except:
+            break
+
+    if tcp_server != None:
+        logging.info("Closing TCP socket")
+        tcp_server.socket.close()
+
+    logging.info("Cancelling timers")
+    timer2_thread.cancel()
+    timer1_thread.cancel()
+
+    logging.info("Exporting data and cleaning GPIO settings")
+    export_status()
+    GPIO.cleanup()
+
+#-------------------------------------------------------------------------
+# Handle SIGTERM and SIGINT signals.
+#-------------------------------------------------------------------------
+def program_exit(signum, frame):
+    global exit_program
+    logging.info("Received exit signal")
+    exit_program = True
+
+#-------------------------------------------------------------------------
+# Handle SIGHUP signal (reload programs).
+#-------------------------------------------------------------------------
+def program_hup(signum, frame):
+    logging.info("Received HUP signal")
+    # TODO: Reload config from file.
+    load_all_programs()
+
+#-------------------------------------------------------------------------
+# Handle SIGUSR1 signal (cycle mode).
+#-------------------------------------------------------------------------
+def program_usr1(signum, frame):
+    logging.info("Received USR1 signal, simulate button #1 press")
+    mode_cycle()
+
+#-------------------------------------------------------------------------
+# Handle SIGUSR2 signal (re-initialize LCD).
+#-------------------------------------------------------------------------
+def program_usr2(signum, frame):
+    logging.info("Received USR2 signal, LCD display reset")
+    lcd_reset()
+
+#-------------------------------------------------------------------------
+# Return internal data (from global variables) as a string.
+#-------------------------------------------------------------------------
+def get_stats():
+    global network_iface, network_addr, network_strength
+    global current_mode, gauge1_value, gauge1_required, switch1_state
+
+    timestamp = int(time.time())
+    temp_measured = temp_required = None
+    if isinstance(gauge1_value,    float): temp_measured = int(gauge1_value    * 1000)
+    if isinstance(gauge1_required, float): temp_required = int(gauge1_required * 1000)
+    mode = MODES[current_mode].replace(" ", "_")
+    if (switch1_state == RELAY_ON):
+        relay_state = 1
+    else:
+        relay_state = 0
+    return "%s %s %s %s %s %s %s %s" % (timestamp, network_iface, network_addr, network_strength, mode, temp_measured, temp_required, relay_state)
+
+#-------------------------------------------------------------------------
+# Expose internal data through a file (use shared memory!).
+#-------------------------------------------------------------------------
+def export_status():
+    global lcd_image
+    if os.path.isdir(SHM_DIR):
+        try:
+            tmpf = tempfile.NamedTemporaryFile('w+b', dir=SHM_DIR, prefix=SHM_STATS, delete=False)
+            tmpf.write(get_stats() + "\n")
+            tmpf.close
+            os.chmod(tmpf.name, 0o644)
+            os.rename(tmpf.name, os.path.join(SHM_DIR, SHM_STATS))
+            lcd_image.save(SHM_IMG, "PNG")
+        except:
+            logging.error("Error writing data in shared memory files: %s" % (sys.exc_info()[0]))
+
+#-------------------------------------------------------------------------
+# Initialize logging.
+#-------------------------------------------------------------------------
+def log_open():
+
+    if not BE_DAEMON:
+        # Log to stdout.
+        handler = logging.StreamHandler(stream=sys.stdout)
+        handler.setFormatter(logging.Formatter(LOG_FMT_FILE, LOG_FMT_DATE))
+    elif LOG_TO_FILE:
+        # Log to file.
+        handler = logging.FileHandler(filename=LOG_TO_FILE)
+        handler.setFormatter(logging.Formatter(LOG_FMT_FILE, LOG_FMT_DATE))
+    else:
+        # Log to syslog.
+        handler = logging.handlers.SysLogHandler(address='/dev/log')
+        handler.setFormatter(logging.Formatter(LOG_FMT_SYSLOG, LOG_FMT_DATE))
+
+    log = logging.getLogger()
+    log.setLevel(LOG_LEVEL)
+    log.addHandler(handler)
+
+#-------------------------------------------------------------------------
+# Entry point.
+#-------------------------------------------------------------------------
+
+# If required: run in foreground and log to stdout.
+if len(sys.argv) > 1:
+    if sys.argv[1] == '-f':
+        BE_DAEMON = False
+
+# Prepare daemon context.
+context = daemon.DaemonContext(
+    working_directory = '/tmp',
+    umask = 0o002,
+    pidfile = daemon.pidlockfile.TimeoutPIDLockFile(
+        path = PID_FILE,
+        acquire_timeout = 2),
+    signal_map = {
+        signal.SIGHUP:  program_hup,
+        signal.SIGINT:  program_exit,
+        signal.SIGTERM: program_exit,
+        signal.SIGUSR1: program_usr1,
+        signal.SIGUSR2: program_usr2}
+)
+
+if BE_DAEMON:
+    try:
+        with context:
+            lcd_initialize()
+            log_open()
+            logging.info("Running as daemon")
+            program_main()
+    except:
+        log_open()
+        logging.error("Error while daemonizing: %s" % (sys.exc_info()[0]))
+
+else:
+    lcd_initialize()
+    log_open()
+    logging.info("Running in foreground")
+    program_main()
+
+logging.info("Exiting program")
