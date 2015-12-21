@@ -1,0 +1,10 @@
+Package: protherm
+Version: 
+Section: admin
+Priority: optional
+Architecture: all
+Depends: python, python-daemon, python-netifaces, rrdtool
+Maintainer: Niccolo Rigacci <niccolo@rigacci.org>
+Description: ....
+ ...
+ ...
