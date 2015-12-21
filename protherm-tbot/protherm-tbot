@@ -330,7 +330,7 @@ def handle(msg):
     elif command.startswith("/set "):
         if not chat_id in authorized_ids:
             logging.error(u"Unauthorized '%s' command from %s, not in %s" % (command, chat_id, authorized_ids))
-            msg = u"Non sei autorizzato a cambiare programma al termostato."
+            msg = u"Non sei autorizzato a cambiare programma al termostato. Chiedi all'amministratore di aggiungere il tuo ID (%d) all'elenco degli autorizzati." % (chat_id)
             bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
         else:
             logging.info(u"Authorized '%s' command from %s" % (command, chat_id))
