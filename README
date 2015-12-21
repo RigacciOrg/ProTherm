@@ -1,0 +1,10 @@
+This is ProTherm, a programmable thermostat for the Raspberry Pi.
+
+==== protherm ====
+A Python daemon which polls the temperature sensor and
+set the relay status (ON/OFF) accordingly a temperature
+program.
+
+==== protherm-tbot ====
+A Python daemon which implements a Telegram Bot,
+to use Telegram Messenger as a remote control.
