@@ -176,7 +176,7 @@ def read_stats():
             if d[7] == "1": stats['switch1'] = True
             elif d[7] == "0": stats['switch1'] = False
         else:
-            logging.error(u"Invalid format in stats file: %s, stat = %s" % (d, s))
+            logging.error(u"Invalid STATS response: \"%s\", stats = %s" % (d, stats))
     return stats
 
 #-------------------------------------------------------------------------
