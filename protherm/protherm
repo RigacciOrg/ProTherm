@@ -1032,15 +1032,18 @@ context = daemon.DaemonContext(
 )
 
 if BE_DAEMON:
+    log_opened = False
     try:
         with context:
-            lcd_initialize()
             log_open()
+            log_opened = False
             logging.info("Running as daemon")
+            lcd_initialize()
             program_main()
-    except:
-        log_open()
-        logging.error("Error while daemonizing: %s" % (sys.exc_info()[0]))
+    except Exception as ex:
+        if not log_opened:
+            log_open()
+        logging.error("type %s: %s" % (type(ex), ex.__str__()))
 
 else:
     lcd_initialize()
