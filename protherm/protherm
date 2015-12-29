@@ -25,7 +25,7 @@
 # along with ProTherm. If not, see <http://www.gnu.org/licenses/>.
 #
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.6  2015-12-16
+# Version       0.7  2015-12-29
 
 # Required Debian packages:
 # python-daemon python-netifaces
@@ -109,6 +109,9 @@ DEFAULT_TEMPERATURE = 10.0
 # Use Celsius or Fahrenheit ("C" or "F").
 DEGREES_UNIT = "C"
 
+# Password for privileged operations on TCP socket.
+ENABLE_PASSWORD = "1234"
+
 #-------------------------------------------------------------------------
 # Other configuration.
 #-------------------------------------------------------------------------
@@ -116,6 +119,8 @@ DEGREES_UNIT = "C"
 SWITCH1_HYSTERESIS = 300   # Hysteresis in program mode
 MANUAL_HYSTERESIS  = 20    # Hysteresis in manual (ON/OFF) mode
 BUTTON1_HYSTERESIS = 20    # Hysteresis after pressing button
+# Programmed temperature hysteresis for changing switch state.
+TEMP_HYSTERESIS = 0.2
 
 # Two manual modes (off, on), others are program modes.
 MODES = {0: "MANUAL OFF", 1: "MANUAL ON", 2: "PROG1", 3: "PROG2", 4: "PROG3"}
@@ -181,11 +186,13 @@ DEFAULTS = {
     "SWITCH1_HYSTERESIS":  str(SWITCH1_HYSTERESIS),
     "MANUAL_HYSTERESIS":   str(MANUAL_HYSTERESIS),
     "BUTTON1_HYSTERESIS":  str(BUTTON1_HYSTERESIS),
+    "TEMP_HYSTERESIS":     str(TEMP_HYSTERESIS),
     "BE_DAEMON":           str(BE_DAEMON),
     "LOG_LEVEL":           str(LOG_LEVEL),
     "LOG_TO_FILE":         str(LOG_TO_FILE),
     "BIND_ADDR":           str(BIND_ADDR),
-    "TCP_PORT":            str(TCP_PORT)
+    "TCP_PORT":            str(TCP_PORT),
+    "ENABLE_PASSWORD":     str(ENABLE_PASSWORD)
 }
 
 # Parse configuration file. We use just one [PROG_NAME] section.
@@ -215,11 +222,13 @@ DEGREES_UNIT        = config.get(PROG_NAME, "DEGREES_UNIT")
 SWITCH1_HYSTERESIS  = config.getint(PROG_NAME, "SWITCH1_HYSTERESIS")
 MANUAL_HYSTERESIS   = config.getint(PROG_NAME, "MANUAL_HYSTERESIS")
 BUTTON1_HYSTERESIS  = config.getint(PROG_NAME, "BUTTON1_HYSTERESIS")
+TEMP_HYSTERESIS     = config.getfloat(PROG_NAME, "TEMP_HYSTERESIS")
 BE_DAEMON           = config.getboolean(PROG_NAME, "BE_DAEMON")
 LOG_LEVEL           = config.get(PROG_NAME, "LOG_LEVEL")
 LOG_TO_FILE         = config.get(PROG_NAME, "LOG_TO_FILE")
 BIND_ADDR           = config.get(PROG_NAME, "BIND_ADDR")
 TCP_PORT            = config.getint(PROG_NAME, "TCP_PORT")
+ENABLE_PASSWORD     = config.get(PROG_NAME, "ENABLE_PASSWORD")
 
 # Convert some options from str to other data types.
 log_levels = {
@@ -450,15 +459,17 @@ def gauge1_read():
             data = f.readline().split()
             logging.debug("Temperature raw data is '%s'" % (data[9]))
             if data[9].startswith("t="):
-                # TODO: avoid error if data[9] is not int.
-                new_value = float(data[9][2:]) / 1000
+                try:
+                    new_value = float(data[9][2:]) / 1000
+                except:
+                    new_value = None
             f.close()
         except:
             pass
     gauge1_value = new_value
 
     if gauge1_value != None:
-        logging.debug("Value of gauge1 is %.1f" %(gauge1_value))
+        logging.debug("Value of gauge1 is %.2f" %(gauge1_value))
     else:
         logging.debug("Error reading gauge1")
     return gauge1_value
@@ -599,9 +610,11 @@ def wifi_quality(ifname):
         for line in f.readlines():
             data = line.strip().split()
             if data[0] == ifname_tag:
-                # TODO: avoid error if data[2] is not float.
                 logging.debug("WiFi signal quality for %s is '%s' (raw data)" % (ifname, data[2]))
-                strength = int(float(data[2]) / WIFI_QUALITY_SCALE * 100)
+                try:
+                    strength = int(float(data[2]) / WIFI_QUALITY_SCALE * 100)
+                except:
+                    strength = 0
                 if strength < 0:   strength = 0
                 if strength > 100: strength = 100
                 break
@@ -785,7 +798,7 @@ def timer2():
     gauge1_required = programmed_temp(time.localtime())
     display_mode()
 
-    logging.debug("Temperature is %s, required %s" %(gauge1_value, gauge1_required))
+    logging.debug("Temperature is %s, required %s (±%.1f)" %(gauge1_value, gauge1_required, TEMP_HYSTERESIS))
 
     if current_mode in MANUAL_MODES:
         # Manual modes.
@@ -797,7 +810,7 @@ def timer2():
             hyst1 = time.time() - switch1_last_change
             hyst2 = time.time() - button1_last_press
             if (hyst1 < MANUAL_HYSTERESIS or hyst2 < BUTTON1_HYSTERESIS):
-                logging.debug("Waiting hysteresis before toggling switch1")
+                logging.debug("Waiting hysteresis time before toggling switch1")
             else:
                 switch1_state = manual_state
                 logging.info("Setting switch1 to %s, mode '%s'" % (switch1_state == RELAY_ON, MODES[current_mode]))
@@ -807,14 +820,14 @@ def timer2():
                 switch1_last_change = time.time()
     elif (gauge1_value != None and gauge1_required != None):
         # Program modes.
-        if (gauge1_value >= gauge1_required and switch1_state == RELAY_ON) or (gauge1_value < gauge1_required and switch1_state == RELAY_OFF):
+        if (gauge1_value >= (gauge1_required + TEMP_HYSTERESIS) and switch1_state == RELAY_ON) or (gauge1_value < (gauge1_required - TEMP_HYSTERESIS) and switch1_state == RELAY_OFF):
             hyst1 = time.time() - switch1_last_change
             hyst2 = time.time() - button1_last_press
             if (hyst1 < SWITCH1_HYSTERESIS or hyst2 < BUTTON1_HYSTERESIS):
-                logging.debug("Waiting hysteresis before toggling switch1")
+                logging.debug("Waiting hysteresis time before toggling switch1")
             else:
                 switch1_state = not switch1_state
-                logging.info("Temperature is %.2f, '%s' requires %.2f, setting switch1 to %s" % (gauge1_value, MODES[current_mode], gauge1_required, switch1_state == RELAY_ON))
+                logging.info("Temperature is %.2f, '%s' requires %.2f (±%.1f), setting switch1 to %s" % (gauge1_value, MODES[current_mode], gauge1_required, TEMP_HYSTERESIS, switch1_state == RELAY_ON))
                 # Update switch1 status display.
                 display_switch1(switch1_state == RELAY_ON)
                 GPIO.output(SWITCH1_GPIO, switch1_state)
