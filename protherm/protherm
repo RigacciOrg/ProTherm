@@ -456,16 +456,22 @@ def gauge1_read():
     else:
         try:
             data = f.readline().split()
-            data = f.readline().split()
-            logging.debug("Temperature raw data is '%s'" % (data[9]))
-            if data[9].startswith("t="):
-                try:
-                    new_value = float(data[9][2:]) / 1000
-                except:
-                    new_value = None
-            f.close()
+            # 21 01 4b 46 7f ff 0f 10 4b : crc=4b YES
+            if data[11] != "YES":
+                logging.error("Bad CRC from temperature sensor: '%s %s'" % (data[10], data[11]))
+            else:
+                data = f.readline().split()
+                # 21 01 4b 46 7f ff 0f 10 4b t=18062
+                logging.debug("Temperature raw data is '%s'" % (data[9]))
+                if data[9].startswith("t="):
+                    try:
+                        new_value = float(data[9][2:]) / 1000
+                    except:
+                        new_value = None
         except:
             pass
+        finally:
+            f.close()
     gauge1_value = new_value
 
     if gauge1_value != None:
