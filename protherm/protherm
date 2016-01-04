@@ -782,6 +782,7 @@ def timer1():
     if interval <= 0:
         logging.error("Function timer1() too slow or timer1_interval too short")
         interval = timer1_interval
+        timer1_next_call = time.time() + timer1_interval
     timer1_thread = threading.Timer(interval, timer1)
     timer1_thread.start()
 
@@ -824,7 +825,7 @@ def timer2():
                 logging.debug("Waiting hysteresis time before toggling switch1")
             else:
                 switch1_state = manual_state
-                logging.info("Setting switch1 to %s, mode '%s'" % (switch1_state == RELAY_ON, MODES[current_mode]))
+                logging.info("Mode is '%s', setting switch1 to %s" % (MODES[current_mode], switch1_state == RELAY_ON))
                 # Update switch1 status display.
                 display_switch1(switch1_state == RELAY_ON)
                 GPIO.output(SWITCH1_GPIO, switch1_state)
@@ -851,6 +852,7 @@ def timer2():
     if interval <= 0:
         logging.error("Function timer2() too slow or timer2_interval too short")
         interval = timer2_interval
+        timer2_next_call = time.time() + timer2_interval
     timer2_thread = threading.Timer(interval, timer2)
     timer2_thread.start()
 
