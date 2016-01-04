@@ -2,7 +2,6 @@
 
 http://www.rigacci.org/wiki/doku.php/doc/appunti/hardware/raspberrypi_thermostat
 
-
 This is a do-it-yourself project to make a **programmable thermostat** with the **Raspberry Pi**, a credit-card sized computer costing about 35 €. I was frustrated by a low-cost thermostat which has only one daily program with just two temperatures. Time accuracy was of a quarter of an hour and temperature accuracy above one Celsius degree.
 
 So I embarked on this project, whose main features are:
@@ -16,7 +15,7 @@ So I embarked on this project, whose main features are:
 * Remote operation using a **web page**.
 * Extensive graphing capabilities via **SNMP**.
 
- This is the list of the hardware required, with their cost:
+This is the list of the hardware required, with their cost:
 
 * **Raspberry Pi** model B with power supply (44 €)
 * Dallas **DS18B20** temperature sensor (2 €)
@@ -27,9 +26,7 @@ So I embarked on this project, whose main features are:
 
 At the total of 65.50 € you must add a suitable case.
 
-You can define several weekly programs and cycle among them pushing a button.
-
-There is a very basic web interface to manage the thermostat remotely, but the preferred way to talk to the thermostat is via **Telegram Messenger**.
+You can define several weekly programs and cycle among them pushing a button. There is a very basic web interface to manage the thermostat remotely, but the preferred way to talk to the thermostat is via Telegram Messenger chat.
 
 ## protherm
 
