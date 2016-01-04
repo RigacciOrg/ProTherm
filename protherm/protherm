@@ -86,7 +86,7 @@ LCD_SPI_PORT = 0
 LCD_SPI_DEVICE = 0
 
 # GPIO connected to button.
-BUTTON1_GPIO = 18
+BUTTON1_GPIO = 2
 BUTTON1_ENABLED = True
 # Button connects the GPIO to 3.3 v (active high) or to ground.
 BUTTON1_ACTIVE_HIGH = False
