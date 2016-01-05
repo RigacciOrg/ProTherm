@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright (C) 2015 Niccolo Rigacci
+# Copyright (C) 2015-2016 Niccolo Rigacci
 #
 # Pogrammable Thermostat for the Raspberry Pi, developed and
 # tested on the following hardware:
@@ -25,7 +25,7 @@
 # along with ProTherm. If not, see <http://www.gnu.org/licenses/>.
 #
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.7  2015-12-29
+# Version       0.7.1  2016-01-04
 
 # Required Debian packages:
 # python-daemon python-netifaces
@@ -86,7 +86,7 @@ LCD_SPI_PORT = 0
 LCD_SPI_DEVICE = 0
 
 # GPIO connected to button.
-BUTTON1_GPIO = 18
+BUTTON1_GPIO = 2
 BUTTON1_ENABLED = True
 # Button connects the GPIO to 3.3 v (active high) or to ground.
 BUTTON1_ACTIVE_HIGH = False
@@ -307,9 +307,9 @@ class socket_tcp_handler(SocketServer.StreamRequestHandler):
                 if requested_mode in MODES.values():
                     # Search MODES dictionary key by value.
                     n = dict((v, k) for k, v in MODES.iteritems())[requested_mode]
-                    msg += u". Mode '%s' = %d" % (requested_mode, n)
-                    logging.info(msg)
                     self.request.sendall(u"OK: Setting mode \"%s\"" % (requested_mode))
+                    msg += u". Mode %d = '%s'" % (n, requested_mode)
+                    logging.info(msg)
                     mode_change(n)
                 else:
                     self.request.sendall(u"ERROR: Mode \"%s\" does not exists" % (requested_mode))
@@ -724,6 +724,8 @@ def mode_cycle():
 
     if current_mode >= (len(MODES) - 1):
         mode_change(0)
+        # Sometimes the LCD just blanks: a workaround to recover it.
+        lcd_reset()
     else:
         mode_change(current_mode + 1)
 
@@ -774,11 +776,15 @@ def timer1():
     logging.debug("Executing timer1()")
     # Update clock display.
     display_clock()
-    timer1_next_call = timer1_next_call + timer1_interval
-    # TODO: what if next call time is already due?
-    timer1_thread = threading.Timer(timer1_next_call - time.time(), timer1)
+    # Prepare the execution of next timer1.
+    timer1_next_call += timer1_interval
+    interval = timer1_next_call - time.time()
+    if interval <= 0:
+        logging.error("Function timer1() too slow or timer1_interval too short")
+        interval = timer1_interval
+        timer1_next_call = time.time() + timer1_interval
+    timer1_thread = threading.Timer(interval, timer1)
     timer1_thread.start()
-
 
 #-------------------------------------------------------------------------
 # Timer #2: update temp sensor (gauge1) and relay switch (switch1)
@@ -819,7 +825,7 @@ def timer2():
                 logging.debug("Waiting hysteresis time before toggling switch1")
             else:
                 switch1_state = manual_state
-                logging.info("Setting switch1 to %s, mode '%s'" % (switch1_state == RELAY_ON, MODES[current_mode]))
+                logging.info("Mode is '%s', setting switch1 to %s" % (MODES[current_mode], switch1_state == RELAY_ON))
                 # Update switch1 status display.
                 display_switch1(switch1_state == RELAY_ON)
                 GPIO.output(SWITCH1_GPIO, switch1_state)
@@ -840,8 +846,14 @@ def timer2():
                 switch1_last_change = time.time()
 
     export_status()
-    timer2_next_call = timer2_next_call + timer2_interval
-    timer2_thread = threading.Timer(timer2_next_call - time.time(), timer2)
+    # Prepare the execution of next timer2.
+    timer2_next_call += timer2_interval
+    interval = timer2_next_call - time.time()
+    if interval <= 0:
+        logging.error("Function timer2() too slow or timer2_interval too short")
+        interval = timer2_interval
+        timer2_next_call = time.time() + timer2_interval
+    timer2_thread = threading.Timer(interval, timer2)
     timer2_thread.start()
 
 #-------------------------------------------------------------------------
@@ -924,7 +936,7 @@ def program_main():
         try:
             time.sleep(180)
             # This is a workaround for a buggy LCD display...
-            lcd_reset()
+            #lcd_reset()
         except:
             break
 
