@@ -25,10 +25,10 @@
 # along with ProTherm. If not, see <http://www.gnu.org/licenses/>.
 #
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.7.1  2016-01-04
+# Version       0.7.2  2016-01-06
 
 # Required Debian packages:
-# python-daemon python-netifaces
+# python-daemon python-netifaces python-ntplib
 
 # python-daemon:
 # https://www.python.org/dev/peps/pep-3143/
@@ -54,7 +54,7 @@
 
 import ConfigParser, daemon, daemon.pidlockfile, signal, threading
 import logging, logging.handlers
-import bisect, netifaces, os, re, sys, tempfile, time
+import bisect, netifaces, ntplib, os, re, sys, tempfile, time
 import socket, SocketServer
 
 import RPi.GPIO as GPIO
@@ -103,8 +103,11 @@ WIFI_IFACE = "wlan0"
 # Link quality reported by iwconfig, usually is 100-based.
 WIFI_QUALITY_SCALE = 100
 
-# Default temperature, if no program is defined.
-DEFAULT_TEMPERATURE = 10.0
+# Default temperature if no program is defined for a given time.
+DEFAULT_TEMPERATURE = 15.0
+
+# Switch to DEFAULT_TEMPERATURE if NTP time is missing.
+NTP_IS_MANDATORY = True
 
 # Use Celsius or Fahrenheit ("C" or "F").
 DEGREES_UNIT = "C"
@@ -139,6 +142,9 @@ LOG_TO_FILE = False
 # Listen to TCP port for commands.
 BIND_ADDR = '127.0.0.1'
 TCP_PORT = 7438
+
+# Warning if NTP reference time is older than NTP_MAX_AGE seconds.
+NTP_MAX_AGE = 3600
 
 #-------------------------------------------------------------------------
 # System configuration.
@@ -182,6 +188,7 @@ DEFAULTS = {
     "WIFI_IFACE":          str(WIFI_IFACE),
     "WIFI_QUALITY_SCALE":  str(WIFI_QUALITY_SCALE),
     "DEFAULT_TEMPERATURE": str(DEFAULT_TEMPERATURE),
+    "NTP_IS_MANDATORY":    str(NTP_IS_MANDATORY),
     "DEGREES_UNIT":        str(DEGREES_UNIT),
     "SWITCH1_HYSTERESIS":  str(SWITCH1_HYSTERESIS),
     "MANUAL_HYSTERESIS":   str(MANUAL_HYSTERESIS),
@@ -218,6 +225,7 @@ WIRED_IFACE         = config.get(PROG_NAME, "WIRED_IFACE")
 WIFI_IFACE          = config.get(PROG_NAME, "WIFI_IFACE")
 WIFI_QUALITY_SCALE  = config.getint(PROG_NAME, "WIFI_QUALITY_SCALE")
 DEFAULT_TEMPERATURE = config.getfloat(PROG_NAME, "DEFAULT_TEMPERATURE")
+NTP_IS_MANDATORY    = config.getboolean(PROG_NAME, "NTP_IS_MANDATORY")
 DEGREES_UNIT        = config.get(PROG_NAME, "DEGREES_UNIT")
 SWITCH1_HYSTERESIS  = config.getint(PROG_NAME, "SWITCH1_HYSTERESIS")
 MANUAL_HYSTERESIS   = config.getint(PROG_NAME, "MANUAL_HYSTERESIS")
@@ -281,6 +289,45 @@ switch1_state = None
 button1_last_press = None
 
 exit_program = False
+
+# "NTP_OK", "NTP_WARNING" or "NTP_ERROR"
+time_ntp_status = "NTP_OK"
+
+#-------------------------------------------------------------------------
+# Check if NTP server on localhost has a valid reference time.
+#-------------------------------------------------------------------------
+def ntp_check_sync():
+    global time_ntp_status
+
+    valid_server_stratum = valid_reference_timestamp = False
+    sync_age = None
+
+    try:
+        c = ntplib.NTPClient()
+        response = c.request('127.0.0.1', version=3)
+        # From ntplip response.stratum is
+        #   0 = unspecified/invalid, 16 = unsynchronized
+        #   1 = primary reference, 2-15 = secondary reference,
+        if 0 < response.stratum < 16:
+            valid_server_stratum = True
+        if response.ref_timestamp > 0.0:
+            valid_reference_timestamp = True
+            sync_age = time.time() - response.ref_time
+    except:
+        logging.error("NTP request failed: %s" % (sys.exc_info()[0]))
+
+    if not valid_reference_timestamp or not valid_server_stratum:
+        time_ntp_status = "NTP_ERROR"
+        logging.error("NTP not syncronized, system time is unknown")
+    else:
+        if sync_age == None:
+            time_ntp_status = "NTP_WARNING"
+            logging.warning("NTP reference time is unknown")
+        elif sync_age > NTP_MAX_AGE:
+            time_ntp_status = "NTP_WARNING"
+            logging.warning("NTP reference time is %d seconds old" % (int(sync_age)))
+        else:
+            time_ntp_status = "NTP_OK"
 
 #-------------------------------------------------------------------------
 # Handler for TCP request.
@@ -411,7 +458,6 @@ def load_program(prog_n):
 # (Re)load all programs from files.
 #-------------------------------------------------------------------------
 def load_all_programs():
-
     global programs
 
     logging.info("Loading programs from files")
@@ -425,11 +471,12 @@ def load_all_programs():
 # Search programs from programmed temperature.
 #-------------------------------------------------------------------------
 def programmed_temp(time):
-
-    global programs, current_mode
+    global programs, current_mode, time_ntp_status
 
     if current_mode in MANUAL_MODES:
         return None
+    elif NTP_IS_MANDATORY and time_ntp_status == "NTP_ERROR":
+        return DEFAULT_TEMPERATURE
     else:
         program = programs[current_mode]
         minute = time.tm_wday * (24 * 60) + time.tm_hour * 60 + time.tm_min
@@ -445,7 +492,6 @@ def programmed_temp(time):
 # Read gauge1 float value, return None if not available or error.
 #-------------------------------------------------------------------------
 def gauge1_read():
-
     global gauge1_value
 
     new_value = None
@@ -484,7 +530,6 @@ def gauge1_read():
 # Initialize the LCD display.
 #-------------------------------------------------------------------------
 def lcd_initialize():
-
     global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
 
     if LCD_ENABLED:
@@ -533,7 +578,6 @@ def lcd_reset():
 # Show system info, e.g. CPU load, etc.
 #-------------------------------------------------------------------------
 def display_sys():
-
     global lcd_disp, lcd_draw, lcd_image, lcd_font
 
     load = u"CPU: %.2f" % (os.getloadavg()[0])
@@ -547,7 +591,6 @@ def display_sys():
 # Show temperature (gauge1) on LCD.
 #-------------------------------------------------------------------------
 def display_temperature():
-
     global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
     global gauge1_value
 
@@ -570,7 +613,6 @@ def display_temperature():
 # Show status of switch1 (fire) on LCD.
 #-------------------------------------------------------------------------
 def display_switch1(status):
-
     global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
 
     if status:
@@ -633,7 +675,6 @@ def wifi_quality(ifname):
 # Get the network signal strength, range 0 - 100 (Ethernet is 100%).
 #-------------------------------------------------------------------------
 def network_status_update():
-
     global network_iface, network_addr, network_strength
 
     if carrier_status(WIRED_IFACE) == 1:
@@ -654,7 +695,6 @@ def network_status_update():
 # Show network data: IP address, signal strength diagram, etc.
 #-------------------------------------------------------------------------
 def display_network():
-
     global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
     global network_iface, network_addr, network_strength
 
@@ -689,7 +729,6 @@ def display_network():
 # Show mode (program, manual ON, manual OFF).
 #-------------------------------------------------------------------------
 def display_mode():
-
     global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
     global gauge1_required, current_mode
 
@@ -708,9 +747,12 @@ def display_mode():
 # Show the clock on LCD.
 #-------------------------------------------------------------------------
 def display_clock():
+    global time_ntp_status
 
-    lcd_draw.rectangle((0, 41, 40, LCD.LCDHEIGHT - 1), outline=255, fill=255)
-    lcd_draw.text((0,37), time.strftime(u"%H:%M:%S"), font=lcd_font['bcmp8'], fill=0)
+    lcd_draw.rectangle((0, 41, 46, LCD.LCDHEIGHT - 1), outline=255, fill=255)
+    time_label = time.strftime(u"%H:%M:%S")
+    if time_ntp_status != "NTP_OK": time_label += u" !"
+    lcd_draw.text((0,37), time_label, font=lcd_font['bcmp8'], fill=0)
     if LCD_ENABLED:
         lcd_disp.image(lcd_image)
         lcd_disp.display()
@@ -719,7 +761,6 @@ def display_clock():
 # Cycle through all modes (manual, prog, etc.)
 #-------------------------------------------------------------------------
 def mode_cycle():
-
     global current_mode
 
     if current_mode >= (len(MODES) - 1):
@@ -733,7 +774,6 @@ def mode_cycle():
 # Set a new manual or program mode (index of MODES dictionary).
 #-------------------------------------------------------------------------
 def mode_change(mode):
-
     global current_mode, gauge1_required, button1_last_press
 
     if (not mode in MODES.keys()):
@@ -768,11 +808,9 @@ def button1_handler(gpio):
 # Timer #1: update display clock.
 #-------------------------------------------------------------------------
 def timer1():
+    global timer1_next_call, timer1_thread
 
-    global timer1_next_call
-    global timer1_thread
     timer1_interval = 1
-
     logging.debug("Executing timer1()")
     # Update clock display.
     display_clock()
@@ -790,14 +828,12 @@ def timer1():
 # Timer #2: update temp sensor (gauge1) and relay switch (switch1)
 #-------------------------------------------------------------------------
 def timer2():
-
     global timer2_next_call, timer2_thread
     global switch1_last_change, switch1_state
     global gauge1_value, gauge1_required, current_mode
     global button1_last_press
 
     timer2_interval = 5
-
     logging.debug("Executing timer2()")
     # Update system information data display.
     display_sys()
@@ -860,7 +896,6 @@ def timer2():
 # Main program loop.
 #-------------------------------------------------------------------------
 def program_main():
-
     global exit_program
     global timer1_thread, timer1_next_call
     global timer2_thread, timer2_next_call
@@ -931,8 +966,8 @@ def program_main():
 
 
     while not exit_program:
-        # TODO: switch to off-line mode if NTP time is missing.
         logging.debug("Idle in main loop")
+        ntp_check_sync()
         try:
             time.sleep(180)
             # This is a workaround for a buggy LCD display...
@@ -986,6 +1021,7 @@ def program_usr2(signum, frame):
 # Return internal data (from global variables) as a string.
 #-------------------------------------------------------------------------
 def get_stats():
+    global time_ntp_status
     global network_iface, network_addr, network_strength
     global current_mode, gauge1_value, gauge1_required, switch1_state
 
@@ -998,7 +1034,7 @@ def get_stats():
         relay_state = 1
     else:
         relay_state = 0
-    return "%s %s %s %s %s %s %s %s" % (timestamp, network_iface, network_addr, network_strength, mode, temp_measured, temp_required, relay_state)
+    return "%s %s %s %s %s %s %s %s %s" % (timestamp, time_ntp_status, network_iface, network_addr, network_strength, mode, temp_measured, temp_required, relay_state)
 
 #-------------------------------------------------------------------------
 # Expose internal data through a file (use shared memory!).

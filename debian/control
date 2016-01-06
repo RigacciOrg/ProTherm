@@ -3,8 +3,8 @@ Version:
 Section: admin
 Priority: optional
 Architecture: all
-Depends: python, python-daemon, python-netifaces, rrdtool
+Depends: ntp, python, python-daemon, python-netifaces, python-ntplib, rrdtool
 Maintainer: Niccolo Rigacci <niccolo@rigacci.org>
-Description: ....
+Description: A programmable thermostat for the Raspberry Pi
  ...
  ...

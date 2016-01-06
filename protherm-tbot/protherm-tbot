@@ -1,10 +1,10 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright (C) 2015 Niccolo Rigacci
+# Copyright (C) 2015-2016 Niccolo Rigacci
 
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.5  2015-12-08
+# Version       0.5.1  2016-01-06
 
 # Required Debian packages:
 # python-daemon
@@ -159,22 +159,23 @@ def get_response_from_socket(cmd):
 def read_stats():
     # Everything is unknown per default.
     stats = {}
-    for key in ('timestamp', 'network_iface', 'network_addr', 'network_strength', 'current_mode', 'temp', 'temp_required', 'switch1'):
+    for key in ('timestamp', 'time_ntp_status', 'network_iface', 'network_addr', 'network_strength', 'current_mode', 'temp', 'temp_required', 'switch1'):
         stats[key] = None
     received = get_response_from_socket("STATS")
-    # Example of stats line: "1449067190 wlan0 192.168.10.2 100 PROG1 17687 14000 0"
+    # Example of stats line: "1449067190 NTP_OK wlan0 192.168.10.2 100 PROG1 17687 14000 0"
     if received != None:
         d = received.strip().split()
-        if len(d) == 8:
+        if len(d) == 9:
             if d[0].isdigit(): stats['timestamp'] = int(d[0])
-            stats['network_iface'] = d[1]
-            stats['network_addr'] = d[2]
-            stats['network_strength'] = d[3]
-            stats['current_mode'] = d[4]
-            if d[5].isdigit(): stats['temp'] = int(d[5]) / 1000.0
-            if d[6].isdigit(): stats['temp_required'] = int(d[6]) / 1000.0
-            if d[7] == "1": stats['switch1'] = True
-            elif d[7] == "0": stats['switch1'] = False
+            stats['time_ntp_status'] = d[1]
+            stats['network_iface'] = d[2]
+            stats['network_addr'] = d[3]
+            stats['network_strength'] = d[4]
+            stats['current_mode'] = d[5]
+            if d[6].isdigit(): stats['temp'] = int(d[6]) / 1000.0
+            if d[7].isdigit(): stats['temp_required'] = int(d[7]) / 1000.0
+            if d[8] == "1": stats['switch1'] = True
+            elif d[8] == "0": stats['switch1'] = False
         else:
             logging.error(u"Invalid STATS response: \"%s\", stats = %s" % (d, stats))
     return stats
@@ -214,6 +215,9 @@ def temp_message():
         msg += u" Il bruciatore è spento."
     else:
         msg += u" Stato del bruciatore sconosciuto."
+    # NTP status.
+    if stats['time_ntp_status'] != "NTP_OK":
+        msg += u" L'ora non è sincronizzata con NTP!"
     return msg
 
 #-------------------------------------------------------------------------
