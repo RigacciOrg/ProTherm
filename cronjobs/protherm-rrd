@@ -1,0 +1,52 @@
+#!/bin/sh -e
+#
+# Create or update the ProTherm Round Robin Database.
+# Run this script from a cronjob, usually with a 5 min interval.
+
+STATS_FILE='/run/shm/protherm/stats'
+RRD='/run/shm/protherm/rra/protherm.rrd'
+RRDBAK="/usr/local/lib/protherm/rra/protherm.rrd"
+
+# Check security for symbolic link (symlink race).
+if [ -L "$RRD" ]; then
+    echo "ERROR: Symbolic link is insecure: '$RRD'"
+    exit 1
+fi
+
+if [ ! -f "$RRD" ]; then
+    # Rond Robin database does not exists.
+    if [ -f "$RRDBAK" ]; then
+        # Get copy from permanent storage.
+        cp -p "$RRDBAK" "$RRD"
+    else
+        # Create new RRD.
+        rrdtool create "$RRD" --step 300 \
+          DS:temp:GAUGE:600:-56000:126000 \
+          DS:tprog:GAUGE:600:-56000:126000 \
+          DS:switch:GAUGE:600:0:1 \
+          RRA:AVERAGE:0.5:1:600 \
+          RRA:AVERAGE:0.5:6:700 \
+          RRA:AVERAGE:0.5:24:775 \
+          RRA:AVERAGE:0.5:288:797 \
+          RRA:MAX:0.5:1:600 \
+          RRA:MAX:0.5:6:700 \
+          RRA:MAX:0.5:24:775 \
+          RRA:MAX:0.5:288:797
+    fi
+fi
+
+# Update RRD with status data.
+test -f "$STATS_FILE" || exit 1
+STATS="$(cat "$STATS_FILE")"
+
+  time="$(echo $STATS | cut -f1 -d' ')"
+  temp="$(echo $STATS | cut -f7 -d' ')"
+ tprog="$(echo $STATS | cut -f8 -d' ')"
+switch="$(echo $STATS | cut -f9 -d' ')"
+
+# Unknown values.
+test "$temp"   = 'None' && temp='U'
+test "$tprog"  = 'None' && tprog='U'
+test "$switch" = 'None' && switch='U'
+
+rrdtool update "$RRD" --template temp:tprog:switch "$time:$temp:$tprog:$switch"

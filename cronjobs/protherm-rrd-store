@@ -1,0 +1,10 @@
+#!/bin/sh -e
+#
+# Copy Round Robin database from shared memory to permanent storage.
+#
+# Run this script from a cronjob. A short interval will minimize data
+# loss in case of reboot or crash, but it will increase wear of SD-card.
+
+FILE1="/run/shm/protherm/rra/protherm.rrd"
+FILE2="/usr/local/lib/protherm/rra/protherm.rrd"
+test "$FILE1" -nt "$FILE2" && cp -p "$FILE1" "$FILE2"

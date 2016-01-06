@@ -1,0 +1,9 @@
+# /etc/cron.d/protherm - Handle ProTherm RRD archive.
+
+MAILTO=""
+
+# Update Round Robin database every 5 minutes.
+*/5 * * * *     root    /usr/local/bin/protherm-rrd && /usr/local/bin/protherm-rrd-graph
+
+# Backup RRD data from shared memory to permanent storage.
+2,32 * * * *    root    /usr/local/bin/protherm-rrd-store

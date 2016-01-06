@@ -1,0 +1,46 @@
+#!/bin/sh -e
+#
+# Create graphs from RRD data.
+
+RRD='/run/shm/protherm/rra/protherm.rrd'
+PNG_DAY='/run/shm/protherm/rra/protherm-day.png'
+PNG_WEEK='/run/shm/protherm/rra/protherm-week.png'
+PNG_MONTH='/run/shm/protherm/rra/protherm-month.png'
+PNG_YEAR='/run/shm/protherm/rra/protherm-year.png'
+
+graph_full() {
+  /usr/bin/rrdtool graph - \
+    --imgformat=PNG --title="$TITLE" \
+    --start="$START" --end='-300' \
+    --base='1000' --height='120' --width='500' \
+    --alt-autoscale-max --alt-autoscale-min \
+    --vertical-label='°C' \
+    --slope-mode \
+    --font TITLE:10: --font AXIS:7: --font LEGEND:8: --font UNIT:7: \
+    DEF:a="$RRD":'temp':AVERAGE \
+    DEF:b="$RRD":'tprog':AVERAGE \
+    DEF:c="$RRD":'switch':AVERAGE \
+    CDEF:cdefa='a,1000,/' \
+    CDEF:cdefb='b,1000,/' \
+    CDEF:cdefc='c,0.5,GT,11,UNKN,IF' \
+    AREA:cdefa#48A8FFFF:'Temp. °C\t'  \
+    GPRINT:cdefa:LAST:'Cur\:%6.1lf %s'  \
+    GPRINT:cdefa:MIN:'Min\:%6.1lf %s'  \
+    GPRINT:cdefa:AVERAGE:'Avg\:%6.1lf %s'  \
+    GPRINT:cdefa:MAX:'Max\:%6.1lf %s\n' \
+    LINE2:cdefb#002A97FF:'Programmed\t'  \
+    GPRINT:cdefb:LAST:'Cur\:%6.1lf %s\n'  \
+    LINE6:cdefc#FF1111AF:'Heating ON\n'
+}
+
+TITLE='ProTherm Daily Statistics'
+START='-86400'
+graph_full > "$PNG_DAY"
+
+TITLE='ProTherm Weekly Statistics'
+START='-604800'
+graph_full > "$PNG_WEEK"
+
+TITLE='ProTherm Monthly Statistics'
+START='-2678400'
+graph_full > "$PNG_MONTH"
