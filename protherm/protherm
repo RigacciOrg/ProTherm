@@ -144,7 +144,7 @@ BIND_ADDR = '127.0.0.1'
 TCP_PORT = 7438
 
 # Warning if NTP reference time is older than NTP_MAX_AGE seconds.
-NTP_MAX_AGE = 3600
+NTP_MAX_AGE = 14400
 
 #-------------------------------------------------------------------------
 # System configuration.
