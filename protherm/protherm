@@ -531,7 +531,7 @@ def gauge1_read():
 #-------------------------------------------------------------------------
 def lcd_initialize():
     # Config LCD_ENABLED must be global so we can alter its content.
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, LCD_ENABLED
 
     device = "/dev/spidev0.%s" % (LCD_SPI_DEVICE)
     if LCD_ENABLED and not os.access(device, os.W_OK):
