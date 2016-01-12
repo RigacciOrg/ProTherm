@@ -10,11 +10,12 @@ fi
 test -f /run/shm/protherm/stats || exit 1
 
 STATS="$(cat /run/shm/protherm/stats)"
+# 1452595285 NTP_OK wlan0 192.168.10.2 100 PROG1 17250 14000 0
   timestamp="$(echo $STATS | cut -f1 -d' ')"
-    program="$(echo $STATS | cut -f5 -d' ')"
-temperature="$(echo $STATS | cut -f6 -d' ')"
-  prog_temp="$(echo $STATS | cut -f7 -d' ')"
-relay_state="$(echo $STATS | cut -f8 -d' ')"
+    program="$(echo $STATS | cut -f6 -d' ')"
+temperature="$(echo $STATS | cut -f7 -d' ')"
+  prog_temp="$(echo $STATS | cut -f8 -d' ')"
+relay_state="$(echo $STATS | cut -f9 -d' ')"
 
 # Check if stats data are fresh enough.
 now="$(date +%s)"
@@ -35,6 +36,6 @@ case "$1" in
         echo "$program"
         ;;
     *)
-        echo "Usage: $(basename $0) {temp|tprog|switch|program}"
+        echo "Usage: $(basename $0) {temp|tprog|switch|program|cputemp}"
         ;;
 esac
