@@ -521,7 +521,7 @@ def gauge1_read():
     gauge1_value = new_value
 
     if gauge1_value != None:
-        logging.debug("Value of gauge1 is %.2f" %(gauge1_value))
+        logging.debug("Value of gauge1 is %.2f" % (gauge1_value))
     else:
         logging.debug("Error reading gauge1")
     return gauge1_value
@@ -530,7 +530,13 @@ def gauge1_read():
 # Initialize the LCD display.
 #-------------------------------------------------------------------------
 def lcd_initialize():
+    # Config LCD_ENABLED must be global so we can alter its content.
     global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+
+    device = "/dev/spidev0.%s" % (LCD_SPI_DEVICE)
+    if LCD_ENABLED and not os.access(device, os.W_OK):
+        logging.error("Device %s is not accessible, disabling LCD" % (device))
+        LCD_ENABLED = False
 
     if LCD_ENABLED:
         lcd_disp = LCD.PCD8544(LCD_DC, LCD_RST, spi=SPI.SpiDev(LCD_SPI_PORT, LCD_SPI_DEVICE, max_speed_hz=3000000))
