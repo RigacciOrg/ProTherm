@@ -1,0 +1,40 @@
+#!/bin/sh -e
+
+# SNMP helper program for ProTherm.
+
+if [ "$1" = "cputemp" ]; then
+    cat /sys/class/thermal/thermal_zone0/temp
+    exit
+fi
+
+test -f /run/shm/protherm/stats || exit 1
+
+STATS="$(cat /run/shm/protherm/stats)"
+  timestamp="$(echo $STATS | cut -f1 -d' ')"
+    program="$(echo $STATS | cut -f5 -d' ')"
+temperature="$(echo $STATS | cut -f6 -d' ')"
+  prog_temp="$(echo $STATS | cut -f7 -d' ')"
+relay_state="$(echo $STATS | cut -f8 -d' ')"
+
+# Check if stats data are fresh enough.
+now="$(date +%s)"
+age="$(($now - $timestamp))"
+test "$age" -gt "120" && exit 1
+
+case "$1" in
+    temp)
+        echo "$temperature"
+        ;;
+    tprog)
+        echo "$prog_temp"
+        ;;
+    switch)
+        echo "$relay_state"
+        ;;
+    program)
+        echo "$program"
+        ;;
+    *)
+        echo "Usage: $(basename $0) {temp|tprog|switch|program}"
+        ;;
+esac
