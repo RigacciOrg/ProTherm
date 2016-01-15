@@ -25,7 +25,7 @@
 # along with ProTherm. If not, see <http://www.gnu.org/licenses/>.
 #
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.7.2  2016-01-06
+# Version       0.7.3  2016-01-13
 
 # Required Debian packages:
 # python-daemon python-netifaces python-ntplib
@@ -771,8 +771,6 @@ def mode_cycle():
 
     if current_mode >= (len(MODES) - 1):
         mode_change(0)
-        # Sometimes the LCD just blanks: a workaround to recover it.
-        lcd_reset()
     else:
         mode_change(current_mode + 1)
 
@@ -780,7 +778,7 @@ def mode_cycle():
 # Set a new manual or program mode (index of MODES dictionary).
 #-------------------------------------------------------------------------
 def mode_change(mode):
-    global current_mode, gauge1_required, button1_last_press
+    global current_mode, gauge1_required
 
     if (not mode in MODES.keys()):
         logging.error("Invalid mode %d requested" % (mode))
@@ -788,7 +786,6 @@ def mode_change(mode):
 
     current_mode = mode;
     logging.info("Changing mode to '%s'" % (MODES[current_mode]))
-    button1_last_press = time.time()
 
     # Write down current mode to file.
     filename = os.path.join(DATA_DIR, CURR_MODE)
@@ -807,8 +804,20 @@ def mode_change(mode):
 # Interrupt driven handler for button #1 press.
 #-------------------------------------------------------------------------
 def button1_handler(gpio):
-    logging.info("Executing button1_handler()")
-    mode_cycle()
+    global button1_last_press
+
+    previous_press = button1_last_press
+    button1_last_press = time.time()
+    if (button1_last_press - previous_press) > 300:
+        logging.info("Executing button1_handler(): LCD reset")
+        # Sometimes the LCD just blanks, may be due electromagnetic
+        # interferences on the GPIOs.
+        # Workaround: the first button press after a long time is
+        # used to reset the LCD instead of cycling program mode.
+        lcd_reset()
+    else:
+        logging.info("Executing button1_handler(): cycle program mode")
+        mode_cycle()
 
 #-------------------------------------------------------------------------
 # Timer #1: update display clock.
@@ -938,6 +947,7 @@ def program_main():
         logging.error("Error reading file '%s'" % (filename))
     logging.info("Mode is '%s'" % (MODES[current_mode]))
 
+    button1_last_press = time.time()
     if BUTTON1_ENABLED:
         logging.info("Adding button #1 handler")
         if BUTTON1_ACTIVE_HIGH:
@@ -952,7 +962,6 @@ def program_main():
     logging.info("Starting timer #2 for temp sensor and relay switch")
     switch1_state = RELAY_OFF
     switch1_last_change = time.time() - SWITCH1_HYSTERESIS
-    button1_last_press = time.time()
     timer2_next_call = time.time()
     timer2()
 
@@ -976,7 +985,7 @@ def program_main():
         ntp_check_sync()
         try:
             time.sleep(180)
-            # This is a workaround for a buggy LCD display...
+            # Workaround for LCD going blank due hardware problems!
             #lcd_reset()
         except:
             break
