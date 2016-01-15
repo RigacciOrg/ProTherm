@@ -1,0 +1,22 @@
+Come aggiungere una scritta in OpenSCAD
+
+Per creare la scritta si usa Inkscape, occorre l'estensione
+paths2openscad scaricabile da https://github.com/l0b0/paths2openscad
+
+Copiare i file paths2openscad.inx e paths2openscad.py
+in $HOME/.config/inkscape/extensions/
+
+  * Disegnare una scritta, (size predefinita di Inkscape: 40 pixel)
+  * Menu Path, Object to Path
+  * Selezionare oggetto
+    * Barra pulsanti, lock ratio, mm, width = 65 (impostare la misura)
+    * Object, Align and Distribute, Relative to Page, Center
+  * Menu Extensions, Generate from Path, Paths to OpenSCAD...
+    Height 1 mm (sarà comunque possibile scalare dopo)
+    Smoothing: 0.2 curve molto morbide
+
+Utilizzare font che non hanno tratti troppo fini, secondo Shapeways.com
+il tratto non deve essere inferiore a 0.2 mm.
+Sempre secondo Shapeways.com le scritte devono essere in rilievo di 0.5
+mm. Non conviene aumentare il rilievo, altrimenti vengono considerati
+"wall" e viene quindi suggerito uno spessore di 1 mm.

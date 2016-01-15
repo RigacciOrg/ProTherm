@@ -1,0 +1,69 @@
+#!/usr/bin/python
+
+# Creates a PDF template to check drill holes for:
+# * Raspberry Pi
+# * Sainsmart-like 2 Realy Board
+# * PCD8544 LCD (red PCB)
+
+import reportlab
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+
+def case_with_rulers(pdf, x, y, w, h):
+    pdf.rect(x*mm, y*mm, w*mm, h*mm, fill=0)
+    pdf.line(x*mm, y*mm, (x + 100)*mm, y*mm)
+    pdf.line(x*mm, y*mm, x*mm, (y + 100)*mm)
+    for i in range(0, 11):
+        pdf.line(x*mm, (y + i * 10)*mm, (x - 4)*mm, (y + i * 10)*mm)
+        pdf.drawAlignedString((x - 5.0)*mm, (y + i * 10)*mm, "%d" % (i), ".")
+        pdf.line((x + i * 10)*mm, y*mm, (x + i * 10)*mm, (y - 4)*mm)
+        pdf.drawCentredString((x + i * 10)*mm, (y - 8.5)*mm, "%d" % (i))
+
+def hole_placeholder(pdf, x, y, r):
+    pdf.line(x*mm - r*mm * 2, y*mm, x*mm + (r*mm * 2), y*mm)
+    pdf.line(x*mm, y*mm - r*mm * 2, x*mm, y*mm + (r*mm * 2))
+    pdf.circle(x*mm, y*mm, r*mm, stroke=1, fill=0)
+
+def relays_sainsmart(pdf, x, y):
+    pdf.drawCentredString((x + 39.0 / 2)*mm, (y + 51.0 / 2)*mm, "2 Relays Module")
+    pdf.rect(x*mm, y*mm, 39.0*mm, 51.0*mm, fill=0)
+    xh = x + 2.75
+    yh = y + 2.75
+    hole_placeholder(pdf, xh,        yh,        3.6 / 2)
+    hole_placeholder(pdf, xh + 33.5, yh,        3.6 / 2)
+    hole_placeholder(pdf, xh,        yh + 45.5, 3.6 / 2)
+    hole_placeholder(pdf, xh + 33.5, yh + 45.5, 3.6 / 2)
+
+def pcd8544_red(c, x, y):
+    pdf.drawCentredString((x + 43.5 / 2)*mm, (y + 43.0 / 2)*mm, "LCD PCD8544")
+    c.rect(x*mm, y*mm,43.5*mm, 43.0*mm, fill=0)
+    xh = x + 1.75
+    yh = y + 2.00
+    hole_placeholder(c, xh,        yh,        3.6 / 2)
+    hole_placeholder(c, xh + 40.0, yh,        3.6 / 2)
+    hole_placeholder(c, xh,        yh + 39.0, 3.6 / 2)
+    hole_placeholder(c, xh + 40.0, yh + 39.0, 3.6 / 2)
+
+def board_raspberrypi_model_b_v2(c, x, y):
+    pdf.drawCentredString((x + 56.0 / 2)*mm, (y + 85.0 / 2)*mm, "Raspberry Pi B v.2")
+    c.rect(x*mm,y*mm,56.0*mm,85.0*mm, fill=0)
+    hole_placeholder(c, x + 56.0 - 18.0, y + 25.5,     2.9 / 2)
+    hole_placeholder(c, x + 12.5,        y + 85.0 - 5, 2.9 / 2)
+
+pdf = canvas.Canvas("protherm-drill-template.pdf", pagesize=reportlab.lib.pagesizes.A4)
+
+x_offset = 50;
+y_offset = 100;
+
+pdf.drawString(30*mm, (y_offset + 165)*mm, "A Programmable Thermostat with the Raspberry Pi")
+pdf.drawString(30*mm, (y_offset + 160)*mm, "https://www.rigacci.org/wiki/doku.php/doc/appunti/hardware/raspberrypi_thermostat")
+pdf.drawString(30*mm, (y_offset - 20)*mm,  "Check the length of the rules (they are cm) on printed paper!")
+pdf.drawString(30*mm, (y_offset - 25)*mm,  "Tip: turn off auto-scaling and/or margins in print options.")
+
+case_with_rulers(            pdf, x_offset +  0.0, y_offset + 0, 115.0, 144.0)
+relays_sainsmart(            pdf, x_offset +  5.0, y_offset + 12.0)
+pcd8544_red(                 pdf, x_offset +  8.0, y_offset + 90.0)
+board_raspberrypi_model_b_v2(pdf, x_offset + 55.0, y_offset + 37.0)
+
+pdf.showPage()
+pdf.save()
