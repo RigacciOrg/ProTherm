@@ -106,7 +106,7 @@ WIFI_QUALITY_SCALE = 100
 # Default temperature if no program is defined for a given time.
 DEFAULT_TEMPERATURE = 15.0
 
-# Switch to DEFAULT_TEMPERATURE if NTP time is missing.
+# Switch to DEFAULT_TEMPERATURE if NTP status is "NTP_ERROR".
 NTP_IS_MANDATORY = True
 
 # Use Celsius or Fahrenheit ("C" or "F").
@@ -317,8 +317,9 @@ def ntp_check_sync():
         logging.error("NTP request failed: %s" % (sys.exc_info()[0]))
 
     if not valid_reference_timestamp or not valid_server_stratum:
+        if time_ntp_status != "NTP_ERROR":
+            logging.error("NTP not syncronized, system time is unknown")
         time_ntp_status = "NTP_ERROR"
-        logging.error("NTP not syncronized, system time is unknown")
     else:
         if sync_age == None:
             time_ntp_status = "NTP_WARNING"
@@ -327,6 +328,8 @@ def ntp_check_sync():
             time_ntp_status = "NTP_WARNING"
             logging.warning("NTP reference time is %d seconds old" % (int(sync_age)))
         else:
+            if time_ntp_status != "NTP_OK":
+                logging.info("NTP is now syncronized")
             time_ntp_status = "NTP_OK"
 
 #-------------------------------------------------------------------------
