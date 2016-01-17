@@ -2,7 +2,7 @@
 // Two-relays module manufactured by SainSmart (or alike).
 //------------------------------------------------------------------------
 module board_2relays_sainsmart() {
-    // Board with 3.6 mm holes.
+    // Board with 3.0 mm holes.
     pcb_thick = 1.6;
     difference() {
         color("darkgreen") cube([39.0, 51.0, pcb_thick]);
@@ -140,12 +140,12 @@ module capacitor(d, h) {
 //------------------------------------------------------------------------
 module board_raspberrypi_model_b_v2() {
 
-    x  = 56;     y = 85;    z =  1.6;	// Official
-    ex = 15.40; ey = 21.8; ez = 13.0;	// Official
-    ex = 16.00; ey = 21.3; ez = 13.5;	// Measured
-    ux = 13.25; uy = 17.2; uz = 15.3;	// Official
-    hx = 11.40; hy = 15.1; hz = 6.15;	// Official
-    mx =  7.60; my =  5.6; mz = 2.40;	// Official
+    x  = 56;     y = 85;    z =  1.6;	// Official PCB size
+    ex = 15.40; ey = 21.8; ez = 13.0;	// Official Ethernet offset
+    ex = 16.00; ey = 21.3; ez = 13.5;	// Measured Ethernet offset
+    ux = 13.25; uy = 17.2; uz = 15.3;	// Official USB connector offset
+    hx = 11.40; hy = 15.1; hz = 6.15;	// Official HDMI connector offset
+    mx =  7.60; my =  5.6; mz = 2.40;	// Official micro USB power connector
 
     // The origin is the lower face of PCB.
     translate([0, 0, z]) {
