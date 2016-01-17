@@ -572,7 +572,7 @@ def lcd_initialize():
 #-------------------------------------------------------------------------
 # Sometimes the LCD gets corrupted (power problem?): workaround.
 #-------------------------------------------------------------------------
-def lcd_reset():
+def lcd_reset(force_display=False):
     global network_addr, network_strength, lcd_disp
     logging.debug("Reset LCD display")
     # Unset network data to force display refresh.
@@ -582,6 +582,8 @@ def lcd_reset():
         lcd_disp.reset()
         lcd_disp.begin(contrast=LCD_CONTRAST)
         lcd_disp.clear()
+        if force_display:
+            lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Show system info, e.g. CPU load, etc.
@@ -826,6 +828,7 @@ def button1_handler(gpio):
 # Timer #1: update display clock.
 #-------------------------------------------------------------------------
 def timer1():
+    global exit_program
     global timer1_next_call, timer1_thread
 
     timer1_interval = 1
@@ -839,13 +842,15 @@ def timer1():
         logging.error("Function timer1() too slow or timer1_interval too short")
         interval = timer1_interval
         timer1_next_call = time.time() + timer1_interval
-    timer1_thread = threading.Timer(interval, timer1)
-    timer1_thread.start()
+    if not exit_program:
+        timer1_thread = threading.Timer(interval, timer1)
+        timer1_thread.start()
 
 #-------------------------------------------------------------------------
 # Timer #2: update temp sensor (gauge1) and relay switch (switch1)
 #-------------------------------------------------------------------------
 def timer2():
+    global exit_program
     global timer2_next_call, timer2_thread
     global switch1_last_change, switch1_state
     global gauge1_value, gauge1_required, current_mode
@@ -907,8 +912,9 @@ def timer2():
         logging.error("Function timer2() too slow or timer2_interval too short")
         interval = timer2_interval
         timer2_next_call = time.time() + timer2_interval
-    timer2_thread = threading.Timer(interval, timer2)
-    timer2_thread.start()
+    if not exit_program:
+        timer2_thread = threading.Timer(interval, timer2)
+        timer2_thread.start()
 
 #-------------------------------------------------------------------------
 # Main program loop.
@@ -1000,9 +1006,14 @@ def program_main():
     logging.info("Cancelling timers")
     timer2_thread.cancel()
     timer1_thread.cancel()
+    # Allow eventually running handlers to terminate.
+    time.sleep(1)
 
     logging.info("Writing data to shared memory file")
     export_status()
+
+    logging.debug("Clearing LCD content")
+    lcd_reset(force_display=True)
 
     logging.info("Cleaning GPIO settings")
     GPIO.cleanup()
@@ -1138,5 +1149,4 @@ else:
     logging.info("Running in foreground")
     program_main()
 
-lcd_reset()
 logging.info("Exiting program")
