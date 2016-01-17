@@ -80,6 +80,7 @@ module box_feet(x, y, margin) {
 //-------------------------------------------------------------------------
 module screw_flange(r, t) {
     $fn = 60;
+    screw_diameter = 2.2;
     r1 = r * 1.1;
     difference() {
         intersection() {
@@ -88,7 +89,7 @@ module screw_flange(r, t) {
                 translate([r, r, 0]) cylinder(r=r, h=t);
                 translate([r, 0, 0]) cube([r, r, t]);
                 translate([0, r, 0]) cube([r, r, t]);}}
-        translate([r1 / 2, r1 / 2, -overcut]) cylinder(r=1, h=(t + overcut * 2), $fn=24);
+        translate([r1 / 2, r1 / 2, -overcut]) cylinder(r=(screw_diameter * 0.75 / 2), h=(t + overcut * 2), $fn=24);
     }
 }
 
@@ -333,7 +334,7 @@ module stub(d1, height, d2, hole_depth) {
 //-------------------------------------------------------------------------
 module stubs_2relays_sainsmart(height) {
     diameter = 7;
-    screw_diameter = 2.5;
+    screw_diameter = 2.2;
     hole_depth = 6;
     // Offset of first (lower left) hole from edge.
     translate([2.75, 2.75, 0]) {
@@ -349,7 +350,7 @@ module stubs_2relays_sainsmart(height) {
 //-------------------------------------------------------------------------
 module stubs_2relays_keyes(height) {
     diameter = 7;
-    screw_diameter = 3.5;
+    screw_diameter = 2.2;
     hole_depth = 6;
     // Offset of first (lower left) hole from edge.
     translate([3.5, 9, 0]) {
@@ -365,7 +366,7 @@ module stubs_2relays_keyes(height) {
 //-------------------------------------------------------------------------
 module stubs_pcd8544_blue(height) {
     diameter = 6.5;
-    screw_diameter = 2.5;
+    screw_diameter = 2.2;
     hole_depth = 6;
     // Offset of first (lower left) hole from edge.
     translate([4.25, 2.25, 0]) {
@@ -381,7 +382,7 @@ module stubs_pcd8544_blue(height) {
 //-------------------------------------------------------------------------
 module stubs_pcd8544_red(height) {
     diameter = 6.0;
-    screw_diameter = 2.0;
+    screw_diameter = 2.2;
     hole_depth = 6;
     // Offset of first (lower left) hole from edge.
     translate([1.75, 2.0, 0]) {
@@ -396,7 +397,7 @@ module stubs_pcd8544_red(height) {
 // Screw stubs for Raspberry Pi Model B v.2.
 //-------------------------------------------------------------------------
 module stubs_raspberrypi_model_b_v2(height) {
-    screw_diameter = 2.5;
+    screw_diameter = 2.2;
     hole_depth = 6;
     translate([38, 25.5, 0]) {
         translate([    0,    0, 0]) stub(6.5, height, screw_diameter, hole_depth);
