@@ -126,7 +126,7 @@ module cable_grommet(h, d1, d2) {
 }
 
 //-------------------------------------------------------------------------
-// Rectangular cable grommet with chamfer.
+// Rectangular (with chamfer) cable grommet.
 // h = height, x, y = hole inner size, r = chamfer radius, t = thickness
 //-------------------------------------------------------------------------
 module cable_grommet_rect(h, x, y, r, t) {
@@ -151,11 +151,11 @@ module screw_hole(d, depth) {
     hole_bottom = -(depth + overcut);
     cut_length = d * 2;
     union() {
-        translate([0, 0, hole_bottom])                  cylinder(r=d, h=hole_depth);
-        translate([-(d / 2), 0, hole_bottom])           cube([d, cut_length, hole_depth]);
-        translate([-cut_length, -(d / 2), hole_bottom]) cube([cut_length, d, hole_depth]);
-        translate([0, cut_length, hole_bottom])         cylinder(r=(d / 2), h=hole_depth);
-        translate([-cut_length, 0, hole_bottom])        cylinder(r=(d / 2), h=hole_depth);
+        translate([0, 0, hole_bottom])          cylinder(r=d, h=hole_depth);
+        translate([-(d / 2), 0, hole_bottom])   cube([d, cut_length, hole_depth]);
+        translate([0, -(d / 2), hole_bottom])   cube([cut_length, d, hole_depth]);
+        translate([0, cut_length, hole_bottom]) cylinder(r=(d / 2), h=hole_depth);
+        translate([cut_length, 0, hole_bottom]) cylinder(r=(d / 2), h=hole_depth);
     }
 }
 
@@ -167,19 +167,22 @@ module screw_hole(d, depth) {
 //-------------------------------------------------------------------------
 module screw_hole_cap(d, thick) {
     $fn = 36;
-    pin_radius = thick * 1;
+    r2 = 1.4142;
+    pin_radius = thick * 1.3;
     pin_heigh = (d * 0.6) + (overlap * 2);
     pin_base = -overlap;
-    size = (d * 4) + (pin_radius * 2);
-    translate([-size + d + (pin_radius * 2), -d - (pin_radius * 2), 0]) {
+    offset = (((pin_radius * r2) - pin_radius) / r2) + ((pin_radius * 2) / r2) + (d / r2);
+    size1 = (offset + overlap) * 2;
+    size2 = size1 + d * 2;
+    translate([-(size1 / 2), -(size1 / 2), 0]) {
         union() {
-            translate([0, 0, d * 0.6]) {
-                rounded_cube(size, size, thick, thick);
-            }
-            translate([pin_radius, pin_radius, pin_base])               cylinder(r=pin_radius, h=pin_heigh);
-            translate([size - pin_radius, pin_radius, pin_base])        cylinder(r=pin_radius, h=pin_heigh);
-            translate([size - pin_radius, size - pin_radius, pin_base]) cylinder(r=pin_radius, h=pin_heigh);
-            translate([pin_radius, size - pin_radius, pin_base])        cylinder(r=pin_radius, h=pin_heigh);
+            translate([0, 0, d * 0.6]) rounded_cube(size1, size2, thick, pin_radius);
+            translate([0, 0, d * 0.6]) rounded_cube(size2, size1, thick, pin_radius);
+            translate([pin_radius, pin_radius, pin_base])                 cylinder(r=pin_radius, h=pin_heigh);
+            translate([size2 - pin_radius, pin_radius, pin_base])         cylinder(r=pin_radius, h=pin_heigh);
+            translate([size2 - pin_radius, size1 - pin_radius, pin_base]) cylinder(r=pin_radius, h=pin_heigh);
+            translate([size1 - pin_radius, size2 - pin_radius, pin_base]) cylinder(r=pin_radius, h=pin_heigh);
+            translate([pin_radius, size2 - pin_radius, pin_base])         cylinder(r=pin_radius, h=pin_heigh);
         }
     }
 }
@@ -206,7 +209,7 @@ module rounded_box(x_size, y_size, z_size, chamfer, thick) {
 }
 
 //-------------------------------------------------------------------------
-// Make a box with rounded corners and required holes.
+// Make a box with rounded corners, drill all the required holes.
 //-------------------------------------------------------------------------
 module rounded_box_holes(x_size, y_size, z_size, chamfer, thick) {
 
@@ -240,8 +243,8 @@ module rounded_box_holes(x_size, y_size, z_size, chamfer, thick) {
         translate([25, 38, -thick]) vent_holes(5, 4, holes_diam, thick);
 
         // Mounting screw holes.
-        translate([x_size / 2, screw_hole1_y, 0]) screw_hole(screw_diam, thick);
-        translate([x_size / 2, screw_hole2_y, 0]) screw_hole(screw_diam, thick);
+        translate([x_size / 2, screw_hole1_y, 0]) rotate(a=90, v=[0, 0, 1]) screw_hole(screw_diam, thick);
+        translate([x_size / 2, screw_hole2_y, 0]) rotate(a=90, v=[0, 0, 1]) screw_hole(screw_diam, thick);
 
         // Temperature sensor hole.
         translate([-(thick + overcut), tsensor_y, tsensor_z])
@@ -276,29 +279,9 @@ module rounded_box_holes(x_size, y_size, z_size, chamfer, thick) {
             rotate(a=90, v=[1, 0, 0]) rounded_cube_centered(bcable_d1, bcable_d2, (thick + overcut * 2), bcable_r);
     }
 
-    // Add mounting screws holes.
-    translate([x_size / 2, screw_hole1_y, 0]) screw_hole_cap(screw_diam, 1.7);
-    translate([x_size / 2, screw_hole2_y, 0]) screw_hole_cap(screw_diam, 1.7);
-}
-
-//-------------------------------------------------------------------------
-// Screw stub: d1 is the outer diameter, d2 is the screw diameter.
-// The stub height must be grather than the depth of the hole.
-//-------------------------------------------------------------------------
-module stub(d1, height, d2, hole_depth) {
-    $fn = 36;
-    // The hole for a self-tapping screw is narrower than the screw.
-    hole_diameter = d2 * 0.75;
-    difference() {
-        translate([0, 0, -overlap]) {
-            union() {
-                cylinder(r=(d1 / 2), h=(height + overlap));
-                cylinder(r1=(d1 * 0.7), r2=(d1 / 2), h=(4 + overlap));
-            }
-        }
-        translate([0, 0, height - hole_depth])
-            cylinder(r=(hole_diameter / 2), h=(hole_depth + overcut));
-    }
+    // Mounting screws holes.
+    translate([x_size / 2, screw_hole1_y, 0]) rotate(a=90, v=[0, 0, 1]) #screw_hole_cap(screw_diam, 1.7);
+    translate([x_size / 2, screw_hole2_y, 0]) rotate(a=90, v=[0, 0, 1]) #screw_hole_cap(screw_diam, 1.7);
 }
 
 //-------------------------------------------------------------------------
@@ -322,6 +305,26 @@ module vent_holes(x, y, diameter, depth) {
             translate([(i - 1) * step - offset_x + step / 2, (j -1) * step - offset_y + step / 2, -overcut])
                 cylinder(r=radius, h=(depth + overcut * 2));
         }
+    }
+}
+
+//-------------------------------------------------------------------------
+// Screw stub: d1 is the outer diameter, d2 is the screw diameter.
+// The stub height must be grather than the depth of the hole.
+//-------------------------------------------------------------------------
+module stub(d1, height, d2, hole_depth) {
+    $fn = 36;
+    // The hole for a self-tapping screw is narrower than the screw.
+    hole_diameter = d2 * 0.75;
+    difference() {
+        translate([0, 0, -overlap]) {
+            union() {
+                cylinder(r=(d1 / 2), h=(height + overlap));
+                cylinder(r1=(d1 * 0.7), r2=(d1 / 2), h=(4 + overlap));
+            }
+        }
+        translate([0, 0, height - hole_depth])
+            cylinder(r=(hole_diameter / 2), h=(hole_depth + overcut));
     }
 }
 
@@ -360,32 +363,32 @@ module stubs_2relays_keyes(height) {
 //-------------------------------------------------------------------------
 // Screw stubs for PCD8544 LCD (Nokia 5110/3310), blue PCB model.
 //-------------------------------------------------------------------------
-module stubs_pcd8544_blue(h) {
+module stubs_pcd8544_blue(height) {
     diameter = 6.5;
     screw_diameter = 2.5;
     hole_depth = 6;
     // Offset of first (lower left) hole from edge.
     translate([4.25, 2.25, 0]) {
-        translate([ 0,    0, 0]) stub(diameter, h, screw_diameter, hole_depth);
-        translate([34.5,  0, 0]) stub(diameter, h, screw_diameter, hole_depth);
-        translate([0,    41, 0]) stub(diameter, h, screw_diameter, hole_depth);
-        translate([34.5, 41, 0]) stub(diameter, h, screw_diameter, hole_depth);
+        translate([ 0,    0, 0]) stub(diameter, height, screw_diameter, hole_depth);
+        translate([34.5,  0, 0]) stub(diameter, height, screw_diameter, hole_depth);
+        translate([0,    41, 0]) stub(diameter, height, screw_diameter, hole_depth);
+        translate([34.5, 41, 0]) stub(diameter, height, screw_diameter, hole_depth);
     }
 }
 
 //-------------------------------------------------------------------------
 // Screw stubs for PCD8544 LCD (Nokia 5110/3310), red PCB model.
 //-------------------------------------------------------------------------
-module stubs_pcd8544_red(h) {
+module stubs_pcd8544_red(height) {
     diameter = 6.0;
     screw_diameter = 2.0;
     hole_depth = 6;
     // Offset of first (lower left) hole from edge.
     translate([1.75, 2.0, 0]) {
-        translate([ 0,  0, 0]) stub(diameter, h, screw_diameter, hole_depth);
-        translate([40,  0, 0]) stub(diameter, h, screw_diameter, hole_depth);
-        translate([ 0, 39, 0]) stub(diameter, h, screw_diameter, hole_depth);
-        translate([40, 39, 0]) stub(diameter, h, screw_diameter, hole_depth);
+        translate([ 0,  0, 0]) stub(diameter, height, screw_diameter, hole_depth);
+        translate([40,  0, 0]) stub(diameter, height, screw_diameter, hole_depth);
+        translate([ 0, 39, 0]) stub(diameter, height, screw_diameter, hole_depth);
+        translate([40, 39, 0]) stub(diameter, height, screw_diameter, hole_depth);
     }
 }
 
