@@ -25,7 +25,7 @@
 # along with ProTherm. If not, see <http://www.gnu.org/licenses/>.
 #
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.7.3  2016-01-13
+# Version       0.7.4  2016-01-17
 
 # Required Debian packages:
 # python-daemon python-netifaces python-ntplib
@@ -1001,8 +1001,10 @@ def program_main():
     timer2_thread.cancel()
     timer1_thread.cancel()
 
-    logging.info("Exporting data and cleaning GPIO settings")
+    logging.info("Writing data to shared memory file")
     export_status()
+
+    logging.info("Cleaning GPIO settings")
     GPIO.cleanup()
 
 #-------------------------------------------------------------------------
@@ -1136,4 +1138,5 @@ else:
     logging.info("Running in foreground")
     program_main()
 
+lcd_reset()
 logging.info("Exiting program")
