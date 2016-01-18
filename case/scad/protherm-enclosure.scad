@@ -26,7 +26,7 @@ screw_diam    = 3.6;
 button_x = x_size;
 button_y = 64;
 button_z = 16.0;
-button_d = 6.2;
+button_d = 6.4;
 
 // Position and size of power socket hole.
 psocket_x = x_size / 2;
@@ -39,7 +39,7 @@ tsensor_y  = 78;
 tsensor_z  = 13;
 tsensor_h  = thick + 9;
 tsensor_d1 = 9.0;
-tsensor_d2 = 5.25;
+tsensor_d2 = 5.5;
 
 // Positon and size for boiler cable grommet (cable is 5.5 x 3.5 mm).
 bcable_x  = 19;
