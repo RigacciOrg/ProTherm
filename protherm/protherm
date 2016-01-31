@@ -25,7 +25,7 @@
 # along with ProTherm. If not, see <http://www.gnu.org/licenses/>.
 #
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.7.4  2016-01-17
+# Version       0.7.5  2016-01-31
 
 # Required Debian packages:
 # python-daemon python-netifaces python-ntplib
@@ -758,6 +758,7 @@ def display_mode():
 # Show the clock on LCD.
 #-------------------------------------------------------------------------
 def display_clock():
+    global lcd_disp, lcd_draw, lcd_image, lcd_font
     global time_ntp_status
 
     lcd_draw.rectangle((0, 41, 46, LCD.LCDHEIGHT - 1), outline=255, fill=255)
