@@ -269,6 +269,7 @@ lcd_draw  = None
 lcd_image = None
 lcd_font  = {}
 lcd_icon  = {}
+lcd_sema  = None # Threading semaphore to access LCD.
 
 network_iface = None
 network_addr = None
@@ -589,20 +590,21 @@ def lcd_reset(force_display=False):
 # Show system info, e.g. CPU load, etc.
 #-------------------------------------------------------------------------
 def display_sys():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_sema
 
     load = u"CPU: %.2f" % (os.getloadavg()[0])
     lcd_draw.rectangle((0, 32, 43, 38), outline=255, fill=255)
     lcd_draw.text((0, 28), load[0:10], font=lcd_font['cnd8'])
     if LCD_ENABLED:
-        lcd_disp.image(lcd_image)
-        lcd_disp.display()
+        with lcd_sema:
+            lcd_disp.image(lcd_image)
+            lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Show temperature (gauge1) on LCD.
 #-------------------------------------------------------------------------
 def display_temperature():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
     global gauge1_value
 
     # Range from -55.0 to 125.0 Celsius.
@@ -617,14 +619,15 @@ def display_temperature():
     lcd_draw.rectangle((0, 0, LCD.LCDWIDTH - 1, 13), outline=255, fill=255)
     lcd_draw.text((0, -8), label, font=lcd_font['bcnd16'])
     if LCD_ENABLED:
-        lcd_disp.image(lcd_image)
-        lcd_disp.display()
+        with lcd_sema:
+            lcd_disp.image(lcd_image)
+            lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Show status of switch1 (fire) on LCD.
 #-------------------------------------------------------------------------
 def display_switch1(status):
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
 
     if status:
         icon = 'fire'
@@ -632,8 +635,9 @@ def display_switch1(status):
         icon = 'blank'
     lcd_image.paste(lcd_icon[icon], (LCD.LCDWIDTH - 32, LCD.LCDHEIGHT - 16))
     if LCD_ENABLED:
-        lcd_disp.image(lcd_image)
-        lcd_disp.display()
+        with lcd_sema:
+            lcd_disp.image(lcd_image)
+            lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Get carrier status from network interface.
@@ -706,7 +710,7 @@ def network_status_update():
 # Show network data: IP address, signal strength diagram, etc.
 #-------------------------------------------------------------------------
 def display_network():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
     global network_iface, network_addr, network_strength
 
     old_iface    = network_iface
@@ -719,8 +723,9 @@ def display_network():
         lcd_draw.rectangle((0, 24, 80, 30), outline=255, fill=255)
         lcd_draw.text((0, 20), u"IP: %s" % (network_addr), font=lcd_font['cnd8'])
         if LCD_ENABLED:
-            lcd_disp.image(lcd_image)
-            lcd_disp.display()
+            with lcd_sema:
+                lcd_disp.image(lcd_image)
+                lcd_disp.display()
 
     # Signal strength.
     if network_strength != old_strength or network_iface != old_iface:
@@ -733,14 +738,15 @@ def display_network():
             icon = u"blank"
         lcd_image.paste(lcd_icon[icon], (LCD.LCDWIDTH - 16, LCD.LCDHEIGHT - 16))
         if LCD_ENABLED:
-            lcd_disp.image(lcd_image)
-            lcd_disp.display()
+            with lcd_sema:
+                lcd_disp.image(lcd_image)
+                lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Show mode (program, manual ON, manual OFF).
 #-------------------------------------------------------------------------
 def display_mode():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
     global gauge1_required, current_mode
 
     if current_mode in MANUAL_MODES:
@@ -751,14 +757,15 @@ def display_mode():
     lcd_draw.rectangle((0, 15, 83, 21), outline=255, fill=255)
     lcd_draw.text((0, 11), label, font=lcd_font['bcnd8'])
     if LCD_ENABLED:
-        lcd_disp.image(lcd_image)
-        lcd_disp.display()
+        with lcd_sema:
+            lcd_disp.image(lcd_image)
+            lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Show the clock on LCD.
 #-------------------------------------------------------------------------
 def display_clock():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font
+    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_sema
     global time_ntp_status
 
     lcd_draw.rectangle((0, 41, 46, LCD.LCDHEIGHT - 1), outline=255, fill=255)
@@ -766,8 +773,9 @@ def display_clock():
     if time_ntp_status != "NTP_OK": time_label += u" !"
     lcd_draw.text((0,37), time_label, font=lcd_font['bcmp8'], fill=0)
     if LCD_ENABLED:
-        lcd_disp.image(lcd_image)
-        lcd_disp.display()
+        with lcd_sema:
+            lcd_disp.image(lcd_image)
+            lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Cycle through all modes (manual, prog, etc.)
@@ -921,6 +929,7 @@ def timer2():
 # Main program loop.
 #-------------------------------------------------------------------------
 def program_main():
+    global lcd_sema
     global exit_program
     global timer1_thread, timer1_next_call
     global timer2_thread, timer2_next_call
@@ -964,6 +973,8 @@ def program_main():
             GPIO.add_event_detect(BUTTON1_GPIO, GPIO.RISING, callback=button1_handler, bouncetime=300)
         else:
             GPIO.add_event_detect(BUTTON1_GPIO, GPIO.FALLING, callback=button1_handler, bouncetime=300)
+
+    lcd_sema = threading.BoundedSemaphore()
 
     logging.info("Starting timer #1 for display clock")
     timer1_next_call = time.time()
