@@ -5,6 +5,13 @@
 # Run this script from a cronjob. A short interval will minimize data
 # loss in case of reboot or crash, but it will increase wear of SD-card.
 
-FILE1="/run/shm/protherm/rra/protherm.rrd"
-FILE2="/usr/local/lib/protherm/rra/protherm.rrd"
-test "$FILE1" -nt "$FILE2" && cp -p "$FILE1" "$FILE2"
+file='protherm.rrd'
+
+src_dir='/run/shm/protherm/rra'
+dst_dir='/usr/local/lib/protherm/rra'
+src_file="$src_dir/$file"
+dst_file="$dst_dir/$file"
+
+test -d "$dst_dir" || mkdir -p "$dst_dir"
+test -f "$src_file" || exit
+test ! -f "$dst_file" -o "$src_file" -nt "$dst_file" && cp -p "$src_file" "$dst_file"
