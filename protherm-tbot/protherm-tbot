@@ -221,9 +221,9 @@ def temp_message():
     return msg
 
 #-------------------------------------------------------------------------
-# Process received messages.
+# Process received Telegram messages.
 #-------------------------------------------------------------------------
-def handle(msg):
+def tmsg_handle(msg):
     global bot, active_chats, authorized_ids
 
     content_type, chat_type, chat_id = telepot.glance2(msg)
@@ -387,9 +387,9 @@ def program_main():
 
     load_runtime_data()
 
-    logging.info(u"Starting Telegram BOT and setting message handle")
+    logging.info(u"Starting Telegram BOT and setting message handler")
     bot = telepot.Bot(BOT_TOKEN)
-    bot.notifyOnMessage(handle)
+    bot.notifyOnMessage(tmsg_handle)
 
     current_mode = 'N/A'
     switch1 = 'N/A'
