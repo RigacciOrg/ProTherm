@@ -543,7 +543,7 @@ def lcd_initialize():
         LCD_ENABLED = False
 
     if LCD_ENABLED:
-        lcd_disp = LCD.PCD8544(LCD_DC, LCD_RST, spi=SPI.SpiDev(LCD_SPI_PORT, LCD_SPI_DEVICE, max_speed_hz=3000000))
+        lcd_disp = LCD.PCD8544(LCD_DC, LCD_RST, spi=SPI.SpiDev(LCD_SPI_PORT, LCD_SPI_DEVICE, max_speed_hz=4000000))
         lcd_disp.begin(contrast=LCD_CONTRAST)
         lcd_disp.clear()
         lcd_disp.display()
