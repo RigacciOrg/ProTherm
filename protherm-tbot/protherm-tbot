@@ -4,14 +4,14 @@
 # Copyright (C) 2015-2016 Niccolo Rigacci
 
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.5.1  2016-01-06
+# Version       0.6.1  2016-10-20
 
 # Required Debian packages:
 # python-daemon
 
 # Telegram BOT:
 # https://github.com/nickoala/telepot
-# https://pythonhosted.org/twx/twx/botapi/botapi.html
+# http://telepot.readthedocs.io/en/latest/reference.html
 
 import ConfigParser, daemon, daemon.pidlockfile, signal, threading
 import logging, logging.handlers
@@ -33,6 +33,8 @@ bot = None
 exit_program = False
 active_chats = {}
 authorized_ids = []
+imalive_wdays = []
+imalive_hours = []
 
 #-------------------------------------------------------------------------
 # Helper function: return True if s can be converted into an int.
@@ -48,15 +50,17 @@ def isint_(s):
 # Read configuration file. Beware: only string values!
 #-------------------------------------------------------------------------
 DEFAULTS = {
-    "AUTHORIZED_IDS": str(''),           # Chat IDs enabled to privileged commands (CSV).
-    "BOT_TOKEN":      str(None),
-    "BE_DAEMON":      str(True),         # Detach terminal and run in background.
-    "LOG_LEVEL":      str("DEBUG"),
-    "LOG_TO_FILE":    str("False"),
-    "STATS_STALE":    str(120),          # Stats data are stale if older than sec.
-    "STATS_ERR_MAX":  str(5),            # Warn if reading stats fails more than times.
-    "PROTHERM_HOST":  str("localhost"),  # ProTherm host to read stats data via TCP.
-    "PROTHERM_PORT":  str(7438)          # ProThemr host is responding on TCP port.
+    "AUTHORIZED_IDS":  str(''),           # Chat IDs enabled to privileged commands (CSV).
+    "BOT_TOKEN":       str(None),
+    "BE_DAEMON":       str(True),         # Detach terminal and run in background.
+    "LOG_LEVEL":       str("DEBUG"),
+    "LOG_TO_FILE":     str("False"),
+    "STATS_STALE":     str(120),          # Stats data are stale if older than sec.
+    "STATS_ERR_MAX":   str(5),            # Warn if reading stats fails more than times.
+    "PROTHERM_HOST":   str("localhost"),  # ProTherm host to read stats data via TCP.
+    "PROTHERM_PORT":   str(7438),         # ProThemr host is responding on TCP port.
+    "IMALIVE_WDAYS":   str('0'),          # Send "I'm alive" message: weekdays, 0 is Monday (CSV).
+    "IMALIVE_HOURS":   str('10')          # Send "I'm alive" message: hours (CSV).
 }
 
 # Parse configuration file. We use just one [PROG_NAME] section.
@@ -65,18 +69,22 @@ config.read(CFG_FILE)
 if not PROG_NAME in config.sections():
     config.add_section(PROG_NAME)
 
-AUTHORIZED_IDS = config.get(PROG_NAME, "AUTHORIZED_IDS")
-BOT_TOKEN      = config.get(PROG_NAME, "BOT_TOKEN")
-BE_DAEMON      = config.getboolean(PROG_NAME, "BE_DAEMON")
-LOG_LEVEL      = config.get(PROG_NAME, "LOG_LEVEL")
-LOG_TO_FILE    = config.get(PROG_NAME, "LOG_TO_FILE")
-STATS_STALE    = config.getint(PROG_NAME, "STATS_STALE")
-STATS_ERR_MAX  = config.getint(PROG_NAME, "STATS_ERR_MAX")
-PROTHERM_HOST  = config.get(PROG_NAME, "PROTHERM_HOST")
-PROTHERM_PORT  = config.getint(PROG_NAME, "PROTHERM_PORT")
+AUTHORIZED_IDS  = config.get(PROG_NAME, "AUTHORIZED_IDS")
+BOT_TOKEN       = config.get(PROG_NAME, "BOT_TOKEN")
+BE_DAEMON       = config.getboolean(PROG_NAME, "BE_DAEMON")
+LOG_LEVEL       = config.get(PROG_NAME, "LOG_LEVEL")
+LOG_TO_FILE     = config.get(PROG_NAME, "LOG_TO_FILE")
+STATS_STALE     = config.getint(PROG_NAME, "STATS_STALE")
+STATS_ERR_MAX   = config.getint(PROG_NAME, "STATS_ERR_MAX")
+PROTHERM_HOST   = config.get(PROG_NAME, "PROTHERM_HOST")
+PROTHERM_PORT   = config.getint(PROG_NAME, "PROTHERM_PORT")
+IMALIVE_WDAYS   = config.get(PROG_NAME, "IMALIVE_WDAYS")
+IMALIVE_HOURS   = config.get(PROG_NAME, "IMALIVE_HOURS")
 
 # Convert some options from str to other data types.
 authorized_ids = [int(i) for i in AUTHORIZED_IDS.split(",") if isint_(i)]
+imalive_wdays  = [int(i) for i in IMALIVE_WDAYS.split(",") if isint_(i)]
+imalive_hours  = [int(i) for i in IMALIVE_HOURS.split(",") if isint_(i)]
 log_levels = {
     "NOTSET": logging.NOTSET,
     "DEBUG": logging.DEBUG,
@@ -117,18 +125,20 @@ def make_custom_keyboard(command, items):
 
 #-------------------------------------------------------------------------
 # Send a message to some chats, return a list of failed ones. If an ID
-# returns telepot.TelegramError, it si removed from active_chat global
-# variable.
+# returns telepot.exception.TelegramError, it si removed from
+# active_chat global variable.
+# parse_mode = None, Markdown or HTML
 #-------------------------------------------------------------------------
-def broadcast_message(bot, msg, chats):
+def broadcast_message(bot, msg, chats, parse_mode=None):
     global active_chats
     logging.info(u"Broadcast message to chats IDs: %s" % (chats))
     failed_ids = []
     for chat_id in chats:
         try:
-            bot.sendMessage(chat_id, msg)
-        except telepot.TelegramError:
-            logging.info(u"'telepot.TelegramError': removing chat_id %s from active chats" % (chat_id))
+            bot.sendMessage(chat_id, msg, parse_mode)
+        except telepot.exception.TelegramError as ex:
+            logging.error(u"TelegramError %s: %s" % (type(ex), ex.__str__()))
+            logging.info(u"TelegramError: removing chat_id %s from active chats" % (chat_id))
             del active_chats[chat_id]
         except:
             logging.error(u"Sending message to %s: %s" % (chat_id, sys.exc_info()[0]))
@@ -226,7 +236,7 @@ def temp_message():
 def tmsg_handle(msg):
     global bot, active_chats, authorized_ids
 
-    content_type, chat_type, chat_id = telepot.glance2(msg)
+    content_type, chat_type, chat_id = telepot.glance(msg)
     # content_type: text, voice, photo, audio, document, video, contact, location, ...
     # chat_type: private, group or channel
 
@@ -347,12 +357,32 @@ def tmsg_handle(msg):
         bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
 
 #-------------------------------------------------------------------------
+# Send an "I'm alive" message.
+#-------------------------------------------------------------------------
+def alive_message():
+    global bot, active_chats
+    me = bot.getMe()
+    if 'username' in me.keys() and 'id' in me.keys():
+        msg = u"Il bot Telegram è vivo; username = *%s*, id = *%s*" % (me['username'], me['id'])
+    else:
+        msg = u"Il bot Telegram è confuso: %s" % (me,)
+    logging.info(msg)
+    broadcast_message(bot, msg, active_chats.keys(), parse_mode='Markdown')
+
+#-------------------------------------------------------------------------
 # Handle SIGTERM and SIGINT signals.
 #-------------------------------------------------------------------------
 def program_exit(signum, frame):
     global exit_program
     logging.info("Received exit signal")
     exit_program = True
+
+#-------------------------------------------------------------------------
+# Handle SIGUSR1 signals.
+#-------------------------------------------------------------------------
+def program_usr1(signum, frame):
+    logging.info("Received USR1 signal")
+    alive_message()
 
 #-------------------------------------------------------------------------
 # Save runtime variables into a pickle file.
@@ -389,11 +419,12 @@ def program_main():
 
     logging.info(u"Starting Telegram BOT and setting message handler")
     bot = telepot.Bot(BOT_TOKEN)
-    bot.notifyOnMessage(tmsg_handle)
+    bot.message_loop(tmsg_handle)
 
     current_mode = 'N/A'
     switch1 = 'N/A'
     read_stats_err_count = 0
+    sent_imalive = False
     while not exit_program:
 
         stats = read_stats()
@@ -444,6 +475,16 @@ def program_main():
             broadcast_message(bot, msg, active_chats.keys())
         switch1 = stats['switch1']
 
+        # Send "I'm alive" message.
+        weekday = datetime.datetime.today().weekday()
+        hour = datetime.datetime.today().hour
+        if weekday in imalive_wdays and hour in imalive_hours:
+            if not sent_imalive:
+                alive_message()
+                sent_imalive = True
+        else:
+            sent_imalive = False
+
         time.sleep(10)
 
     save_runtime_data()
@@ -482,7 +523,8 @@ context = daemon.DaemonContext(
         acquire_timeout = 2),
     signal_map = {
         signal.SIGINT:  program_exit,
-        signal.SIGTERM: program_exit}
+        signal.SIGTERM: program_exit,
+        signal.SIGUSR1: program_usr1}
 )
 
 if BE_DAEMON:
