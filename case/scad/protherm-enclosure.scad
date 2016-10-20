@@ -251,7 +251,7 @@ module rounded_box_holes(x_size, y_size, z_size, chamfer, thick) {
         translate([-(thick + overcut), tsensor_y, tsensor_z])
             rotate(a=90, v=[0, 1, 0]) cylinder(r=(tsensor_d2 / 2), h=(thick + overcut * 2), $fn=24);
 
-        // Bush-button hole.
+        // Push-button hole.
         translate([button_x - overcut, button_y, button_z])
             rotate(a=90, v=[0, 1, 0]) cylinder(r=(button_d / 2), h=(thick + overcut * 2), $fn=24);
 
