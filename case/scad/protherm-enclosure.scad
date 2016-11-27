@@ -433,3 +433,23 @@ translate([-x_size / 2 - thick + overlap, 34, 13])
         //#cube([35.60, 12.54, 0.5], center=true);
         ccbysa(0.5);
     }
+
+//-------------------------------------------------------------------------
+// 2D Cover: load this geometry alone, Compile and Render (F6),
+// Export to DXF (protherm-2d-cover.dxf).
+//-------------------------------------------------------------------------
+screw_diameter = 2.5;
+r1 = (chamfer - overcut) * 1.1;
+x = x_size + overlap * 2;
+y = y_size + overlap * 2;
+translate([-(x_size / 2), -(y_size/2)]) {
+    difference() {
+      rounded_square(x_size - (overcut * 2), y_size - (overcut * 2), (chamfer - overcut));
+      union() {
+          translate([0, 0]) rotate(a=0 ,   v=[0, 0, 1]) translate([r1 / 2, r1 / 2]) circle(r=(screw_diameter / 2), $fn=24);
+          translate([x, 0]) rotate(a=90,   v=[0, 0, 1]) translate([r1 / 2, r1 / 2]) circle(r=(screw_diameter / 2), $fn=24);
+          translate([x, y]) rotate(a=180,  v=[0, 0, 1]) translate([r1 / 2, r1 / 2]) circle(r=(screw_diameter / 2), $fn=24);
+          translate([0, y]) rotate(a=270,  v=[0, 0, 1]) translate([r1 / 2, r1 / 2]) circle(r=(screw_diameter / 2), $fn=24);
+      }
+    }
+}
