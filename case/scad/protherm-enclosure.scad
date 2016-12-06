@@ -435,8 +435,15 @@ translate([-x_size / 2 - thick + overlap, 34, 13])
     }
 
 //-------------------------------------------------------------------------
-// 2D Cover: load this geometry alone, Compile and Render (F6),
-// Export to DXF (protherm-2d-cover.dxf).
+// The cover: 2D shape for laser cutting. Load this geometry alone,
+// Compile and Render (F6), Export to DXF (protherm-2d-cover.dxf).
+//
+// Nominal size on the X axis:
+//
+//   x_size - overcut * 2   =>   115.0 - 0.1 * 2 = 114.8
+//
+// The cutted real piece turned out to be 114.5 mm, then we suppose
+// that the laser track on plexiglass is about 0.3 mm.
 //-------------------------------------------------------------------------
 screw_diameter = 2.5;
 r1 = (chamfer - overcut) * 1.1;
