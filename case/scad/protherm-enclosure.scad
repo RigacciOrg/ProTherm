@@ -417,7 +417,7 @@ translate([-(x_size / 2), -(y_size/2), 0]) {
     //translate([ 8, 90, 20.5]) board_pcd8544_red();
     //translate([ 5, 12,  5.0]) board_2relays_sainsmart();
     //translate([button_x, button_y, button_z]) rotate(a=90, v=[0, 1, 0]) push_button();
-    //translate([psocket_x, -thick, psocket_z]) rotate(a=90, v=[1, 0, 0]) coax_power_jack();
+    //translate([psocket_x, -thick, psocket_z]) rotate(a=90, v=[1, 0, 0]) coax_power_socket();
 }
 
 include <RigacciOrg.scad>;

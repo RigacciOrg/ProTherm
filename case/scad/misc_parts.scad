@@ -20,9 +20,9 @@ module rocker_switch() {
 }
 
 //------------------------------------------------------------------------
-// Coaxial power plug 2.1 mm.
+// Coaxial power plug socket, 2.1 mm.
 //------------------------------------------------------------------------
-module coax_power_jack() {
+module coax_power_socket() {
     r1 = 5.00; h1 = 4;
     r2 = 4.00; h2 = 8.0;
     r3 = 2.75; h3 = 10;  // Hole
