@@ -1146,7 +1146,7 @@ if BE_DAEMON:
     try:
         with context:
             log_open()
-            log_opened = False
+            log_opened = True
             logging.info("Running as daemon")
             lcd_initialize()
             program_main()
