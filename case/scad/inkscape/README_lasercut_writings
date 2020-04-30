@@ -1,0 +1,11 @@
+Scritta, Font Gentium Book Basic
+
+Line di taglio: rosso
+Line di incisione: blu
+Zone di riempimento: giallo
+
+Per trasformare una scritta in oggetto: Path, Object to Path
+
+Per fare un poligono con buchi: Path, Exclusion
+
+Salva come DXF
