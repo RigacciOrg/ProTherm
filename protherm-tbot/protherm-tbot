@@ -4,7 +4,7 @@
 # Copyright (C) 2015-2016 Niccolo Rigacci
 
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.6.1  2016-10-20
+# Version       0.6.2  2020-04-30
 
 # Required Debian packages:
 # python-daemon
@@ -13,7 +13,11 @@
 # https://github.com/nickoala/telepot
 # http://telepot.readthedocs.io/en/latest/reference.html
 
-import ConfigParser, daemon, daemon.pidlockfile, signal, threading
+import ConfigParser
+import daemon, daemon.pidlockfile
+import lockfile
+import signal
+import threading
 import logging, logging.handlers
 import datetime, os, os.path, pickle, sys, socket, subprocess, tempfile, time
 import telepot
@@ -274,6 +278,7 @@ def tmsg_handle(msg):
 /set imposta il programma
 /view vedi i programmi disponibili
 /who chi è in linea con il bot
+/exclude esclude utente in linea
 /help mostra questo messaggio"""
         bot.sendMessage(chat_id, help_msg, reply_markup=custom_keyboard)
 
@@ -296,7 +301,7 @@ def tmsg_handle(msg):
         else:
             users = []
             for chat in active_chats.values():
-                users.append(display_name(chat))
+                users.append('%s (%s)' % (display_name(chat), chat['id']))
             msg = u"Attualmente sto chattando con %s." % (", ".join(users))
         bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
 
@@ -351,6 +356,21 @@ def tmsg_handle(msg):
             response = get_response_from_socket("SET %s" % (command[5:]))
             msg = u"Ho inviato il comando al termostato che ha risposto: %s" %(response)
             bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+
+    elif command.startswith("/exclude "):
+        if not chat_id in authorized_ids:
+            logging.error(u"Unauthorized '%s' command from %s, not in %s" % (command, chat_id, authorized_ids))
+            msg = u"Non sei autorizzato ad escludere qualcuno."
+            bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+        else:
+            try:
+                logging.info(u"Authorized '%s' command from %s" % (command, chat_id))
+                user_id = int(command[6:])
+                msg = u"Escludo l'utente %d dalla chat." % (user_id,)
+                bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+                del active_chats[user_id]
+            except:
+                logging.info(u"/exclude command failed")
 
     else:
         msg = u"Non ho capito. Se non sai cosa fare prova il comando /help"
@@ -529,16 +549,25 @@ context = daemon.DaemonContext(
 
 if BE_DAEMON:
     log_opened = False
-    try:
-        with context:
-            log_open()
-            log_opened = True
-            logging.info("Running as daemon")
-            program_main()
-    except Exception as ex:
-        if not log_opened:
-            log_open()
-        logging.error("type %s: %s" % (type(ex), ex.__str__()))
+    while not exit_program:
+        try:
+            with context:
+                log_open()
+                log_opened = True
+                logging.info("Running as daemon")
+                program_main()
+        except lockfile.LockTimeout:
+            if not log_opened: log_open()
+            logging.error('Cannot lock PID file: %s' % (PID_FILE,))
+            break
+        except Exception as ex:
+            if not log_opened: log_open()
+            logging.warning('Trying to recover from exception')
+            logging.error("type %s: %s" % (type(ex), ex.__str__()))
+        except:
+            if not log_opened: log_open()
+            logging.error('Fatal exception: %s' % (sys.exc_info()[0],))
+            break
 
 else:
     log_open()
