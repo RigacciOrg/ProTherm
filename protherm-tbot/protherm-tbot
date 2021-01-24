@@ -1,10 +1,15 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright (C) 2015-2016 Niccolo Rigacci
+# Copyright (C) 2015-2020 Niccolo Rigacci
 
 # Author        Niccolo Rigacci <niccolo@rigacci.org>
-# Version       0.6.2  2020-04-30
+#
+# Version 0.6.3  2020-04-30
+#  * Fixed bug in /exclude command.
+#  * Added broadcast message when user join chat.
+#
+# Version 0.6.2  2020-04-30
 
 # Required Debian packages:
 # python-daemon
@@ -253,6 +258,8 @@ def tmsg_handle(msg):
         active_chats[chat_id] = msg['chat']
         logging.info("active_chats = %s" % (active_chats))
         save_runtime_data()
+        msg = u"L'id %s (%s) è entrato in chat" % (chat_id, display_name(msg['chat']))
+        broadcast_message(bot, msg, active_chats.keys(), parse_mode='Markdown')
     else:
         # Save it anyway to catch attribute changes.
         active_chats[chat_id] = msg['chat']
@@ -278,7 +285,7 @@ def tmsg_handle(msg):
 /set imposta il programma
 /view vedi i programmi disponibili
 /who chi è in linea con il bot
-/exclude esclude utente in linea
+/exclude esclude ID utente da chat
 /help mostra questo messaggio"""
         bot.sendMessage(chat_id, help_msg, reply_markup=custom_keyboard)
 
@@ -365,12 +372,14 @@ def tmsg_handle(msg):
         else:
             try:
                 logging.info(u"Authorized '%s' command from %s" % (command, chat_id))
-                user_id = int(command[6:])
+                user_id = int(command[9:])
                 msg = u"Escludo l'utente %d dalla chat." % (user_id,)
                 bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
                 del active_chats[user_id]
-            except:
-                logging.info(u"/exclude command failed")
+            except Exception as ex:
+                msg = u'Errore: %s' % (ex.__str__(),)
+                bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+                logging.info(u"/exclude command failed with error %s" % (type(ex),))
 
     else:
         msg = u"Non ho capito. Se non sai cosa fare prova il comando /help"
