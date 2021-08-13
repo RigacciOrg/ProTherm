@@ -1,0 +1,15 @@
+[Unit]
+Description=Programmable Thermostat Service
+After=syslog.target
+
+[Service]
+Type=simple
+User=node
+Group=node
+WorkingDirectory=/tmp/
+ExecStart=/usr/local/sbin/protherm -f
+StandardOutput=syslog
+StandardError=syslog
+
+[Install]
+WantedBy=multi-user.target
