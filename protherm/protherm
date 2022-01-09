@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 ProTherm -- Pogrammable Thermostat for the Raspberry Pi.
@@ -25,29 +25,31 @@ You should have received a copy of the GNU General Public
 License along with ProTherm. If not, see
 <http://www.gnu.org/licenses/>.
 
-protherm (0.7.6)
-  * Added signal handling even if run in foreground.
-  * Fixed bug in closing TCP socket.
-  * Fixed octal notation for Python3 compatibiliy.
-  * Added UTF-8 encoding/decoding to socket communication (Python3 compat).
-  * Added some debug in gauge1_read() if errors in reading temperature.
- -- Niccolo Rigacci <niccolo@rigacci.org>  2021-08-13
+protherm (0.9.0)
+  * Can use both the new library adafruit_pcd8544 or the old
+    Adafruit_Nokia_LCD (lower CPU usage).
+  * Moved configuration into a single global class instead of
+    global variables.
+ -- Niccolo Rigacci <niccolo@rigacci.org>
+
+protherm (0.8.0)
+  * Porting code to Python 3.
+  * Upgrade LCD library to adafruit_pcd8544.
+ -- 2021-08-09
 
 protherm (0.7.5)
- -- Niccolo Rigacci <niccolo@rigacci.org>  2016-01-31
+ -- 2016-01-31
 
 Required Debian packages:
-  * python-daemon
-  * python-lockfile
-  * python-netifaces
-  * python-ntplib
-  * python-pil
-  * python-rpi.gpio
+  * python3-daemon
+  * python3-lockfile
+  * python3-netifaces
+  * python3-ntplib
+  * python3-pil
+  * python3-rpi.gpio
 
 Required pip packages:
-  * Adafruit_PureIO 0.2.1
-  * Adafruit_Python GPIO-1.0.4
-  * Adafruit_Nokia_LCD 0.2.0
+  * adafruit-circuitpython-pcd8544
 
 python-daemon:
 https://www.python.org/dev/peps/pep-3143/
@@ -56,8 +58,12 @@ http://python-daemon.sourcearchive.com/documentation/1.5.5-1/
 Timer:
 http://stackoverflow.com/questions/8600161/executing-periodic-actions-in-python
 
-LCD display:
-https://learn.adafruit.com/nokia-5110-3310-lcd-python-library/wiring
+PCD8544 LCD display with the old Adafruit Nokia LCD library:
+https://github.com/adafruit/Adafruit_Nokia_LCD/
+
+PCD8544 LCD display with the new Adafruit_CircuitPython_PCD8544 library:
+https://github.com/adafruit/Adafruit_CircuitPython_PCD8544/
+https://learn.adafruit.com/nokia-5110-3310-monochrome-lcd/
 
 GPIO programming:
 http://makezine.com/projects/tutorial-raspberry-pi-gpio-pins-and-python/
@@ -72,28 +78,41 @@ Buttons:
 http://sourceforge.net/p/raspberry-gpio-python/wiki/Inputs/
 """
 
-import ConfigParser
-import daemon, daemon.pidlockfile
+import configparser
+import daemon
+import daemon.pidfile
 import signal
 import threading
 import logging, logging.handlers
 import bisect
-import netifaces, ntplib, os, re, sys, tempfile, time
-import socket, SocketServer
+import netifaces
+import ntplib
+import os, re, sys, tempfile, time
+import socket
+import socketserver
+#import yappi
 
 import RPi.GPIO as GPIO
-import Adafruit_Nokia_LCD as LCD
-import Adafruit_GPIO.SPI as SPI
+
+# Defer modules loading into the object class.
+#import board
+#import busio
+#import digitalio
+#import adafruit_pcd8544
+
+# Defer modules loading into the object class.
+#import Adafruit_Nokia_LCD as LCD
+#import Adafruit_GPIO.SPI as SPI
 
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 
 __author__ = "Niccolo Rigacci"
-__copyright__ = "Copyright 2015-2021 Niccolo Rigacci <niccolo@rigacci.org>"
+__copyright__ = "Copyright 2015-2022 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.7.6"
+__version__ = "0.9.0"
 
 #-------------------------------------------------------------------------
 # Global contants.
@@ -113,70 +132,6 @@ DEFINED_LOGLEVELS = {
 }
 
 #-------------------------------------------------------------------------
-# Options eventually overridden by config file.
-#-------------------------------------------------------------------------
-#Temperature sensor device ID.
-TEMP_SENSOR = "/sys/bus/w1/devices/28-0000067bc546/w1_slave"
-
-# PCD8544 LCD settings and Raspberry Pi SPI pin connections.
-LCD_ENABLED = True
-LCD_CONTRAST = 55
-LCD_DC = 23  # GPIO used for SPI Data/Command
-LCD_RST = 24  # GPIO used for SPI Reset
-LCD_SPI_PORT = 0
-LCD_SPI_DEVICE = 0
-
-# GPIO connected to button.
-BUTTON1_GPIO = 2
-BUTTON1_ENABLED = True
-# Button connects the GPIO to 3.3 v (active high) or to ground.
-BUTTON1_ACTIVE_HIGH = False
-
-# GPIO connected to switch relays.
-SWITCH1_GPIO = 14
-SWITCH2_GPIO = 15
-# Relay module board uses "active high" signaling.
-RELAY_ACTIVE_HIGH = False
-
-# Networking.
-WIRED_IFACE = "eth0"
-WIFI_IFACE = "wlan0"
-# Link quality reported by iwconfig, usually is 100-based.
-WIFI_QUALITY_SCALE = 100
-
-# Default temperature if no program is defined for a given time.
-DEFAULT_TEMPERATURE = 15.0
-
-# Switch to DEFAULT_TEMPERATURE if NTP status is "NTP_ERROR".
-NTP_IS_MANDATORY = True
-
-# Use Celsius or Fahrenheit ("C" or "F").
-DEGREES_UNIT = "C"
-
-# Hysteresis times before changing switch state.
-SWITCH1_HYSTERESIS = 300   # Hysteresis in program mode
-MANUAL_HYSTERESIS  = 20    # Hysteresis in manual (ON/OFF) mode
-BUTTON1_HYSTERESIS = 20    # Hysteresis after pressing button
-# Programmed temperature hysteresis for changing switch state.
-TEMP_HYSTERESIS = 0.2
-
-# Run as a daemon and logging options.
-BE_DAEMON = True
-
-# From logging module: NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL
-LOG_LEVEL = "INFO"
-# False for syslog logging, filename for file logging.
-LOG_TO_FILE = False
-#LOG_TO_FILE = "/var/log/protherm.log"
-
-# Listen to TCP port for commands.
-BIND_ADDR = '127.0.0.1'
-TCP_PORT = 7438
-
-# Password for privileged operations on TCP socket.
-ENABLE_PASSWORD = "1234"
-
-#-------------------------------------------------------------------------
 # Other configuration.
 #-------------------------------------------------------------------------
 # Two manual modes (off, on), others are program modes.
@@ -185,12 +140,8 @@ MANUAL_MODES = [0, 1]
 MODE_MANUAL_OFF = 0
 MODE_DEFAULT = 2
 
-# Realy state: can be active-high or active-low.
-RELAY_ON  = RELAY_ACTIVE_HIGH
-RELAY_OFF = not RELAY_ACTIVE_HIGH
-
 # Idle loop duration (seconds): latency on signal handling.
-IDLE_LOOP_TIME = 30
+IDLE_LOOP_TIME = 15
 
 # Warning if NTP reference time is older than NTP_MAX_AGE seconds.
 NTP_MAX_AGE = 14400
@@ -198,10 +149,6 @@ NTP_MAX_AGE = 14400
 #-------------------------------------------------------------------------
 # System configuration.
 #-------------------------------------------------------------------------
-LOG_FMT_SYSLOG = '%(module)s: %(levelname)s %(message)s'
-LOG_FMT_FILE   = '%(asctime)s %(levelname)s %(message)s'
-LOG_FMT_DATE   = '%Y-%m-%d %H:%M:%S'
-
 PID_FILE  = "/var/run/%s.pid" % (PROG_NAME)
 SHM_DIR   = "/run/shm/%s" % (PROG_NAME)         # Use shared memory!
 SHM_STATS = "stats"                             # Statistics file
@@ -211,150 +158,365 @@ FONTS_DIR = "/usr/local/share/fonts"
 ICONS_DIR = "/usr/local/share/icons"
 DATA_DIR  = "/usr/local/lib/%s" % (PROG_NAME)
 CURR_MODE = "current_mode"
-
 # Where to read networking stats.
-IFACE_CARRIER = "/sys/class/net/%s/carrier"
-WIFI_DATA = "/proc/net/wireless"
-
-#-------------------------------------------------------------------------
-# Dictionary of config defaults (require all string values).
-#-------------------------------------------------------------------------
-CONFIG_DEFAULTS = {
-    "TEMP_SENSOR":         str(TEMP_SENSOR),
-    "LCD_ENABLED":         str(LCD_ENABLED),
-    "LCD_CONTRAST":        str(LCD_CONTRAST),
-    "LCD_DC":              str(LCD_DC),
-    "LCD_RST":             str(LCD_RST),
-    "LCD_SPI_PORT":        str(LCD_SPI_PORT),
-    "LCD_SPI_DEVICE":      str(LCD_SPI_DEVICE),
-    "BUTTON1_GPIO":        str(BUTTON1_GPIO),
-    "BUTTON1_ENABLED":     str(BUTTON1_ENABLED),
-    "BUTTON1_ACTIVE_HIGH": str(BUTTON1_ACTIVE_HIGH),
-    "SWITCH1_GPIO":        str(SWITCH1_GPIO),
-    "SWITCH2_GPIO":        str(SWITCH2_GPIO),
-    "RELAY_ACTIVE_HIGH":   str(RELAY_ACTIVE_HIGH),
-    "WIRED_IFACE":         str(WIRED_IFACE),
-    "WIFI_IFACE":          str(WIFI_IFACE),
-    "WIFI_QUALITY_SCALE":  str(WIFI_QUALITY_SCALE),
-    "DEFAULT_TEMPERATURE": str(DEFAULT_TEMPERATURE),
-    "NTP_IS_MANDATORY":    str(NTP_IS_MANDATORY),
-    "DEGREES_UNIT":        str(DEGREES_UNIT),
-    "SWITCH1_HYSTERESIS":  str(SWITCH1_HYSTERESIS),
-    "MANUAL_HYSTERESIS":   str(MANUAL_HYSTERESIS),
-    "BUTTON1_HYSTERESIS":  str(BUTTON1_HYSTERESIS),
-    "TEMP_HYSTERESIS":     str(TEMP_HYSTERESIS),
-    "BE_DAEMON":           str(BE_DAEMON),
-    "LOG_LEVEL":           str(LOG_LEVEL),
-    "LOG_TO_FILE":         str(LOG_TO_FILE),
-    "BIND_ADDR":           str(BIND_ADDR),
-    "TCP_PORT":            str(TCP_PORT),
-    "ENABLE_PASSWORD":     str(ENABLE_PASSWORD)
-}
-
+IFACE_CARRIER = '/sys/class/net/%s/carrier'
+WIFI_DATA = '/proc/net/wireless'
 
 #-------------------------------------------------------------------------
 # Global variables.
 #-------------------------------------------------------------------------
-# Current mode, used as an index of MODES array.
-current_mode = None
-# Programs loaded from files, indexed by current_mode.
-programs = {}
-
-lcd_disp  = None
-lcd_draw  = None
-lcd_image = None
-lcd_font  = {}
-lcd_icon  = {}
-lcd_sema  = None # Threading semaphore to access LCD.
-
-network_iface = None
-network_addr = None
-network_strength = None
-
-timer1_next_call = None
-timer1_thread = None
-
-timer2_next_call = None
-timer2_thread = None
-
-gauge1_value = None
-gauge1_required = None
-
-switch1_last_change = None
-switch1_state = None
-
-button1_last_press = None
-
-exit_program = False
-
-# "NTP_OK", "NTP_WARNING" or "NTP_ERROR"
-time_ntp_status = "NTP_OK"
-
-config = None
+cfg = None
+lcd = None
+thermostat = None
 
 #-------------------------------------------------------------------------
-# Read configuration file.
+# Class object to store thermostat internal data.
 #-------------------------------------------------------------------------
-def read_config():
-    global config
-    global TEMP_SENSOR
-    global LCD_ENABLED, LCD_CONTRAST, LCD_DC, LCD_RST, LCD_SPI_PORT, LCD_SPI_DEVICE
-    global BUTTON1_GPIO, BUTTON1_ENABLED, BUTTON1_ACTIVE_HIGH
-    global SWITCH1_GPIO, SWITCH2_GPIO, RELAY_ACTIVE_HIGH
-    global WIRED_IFACE, WIFI_IFACE, WIFI_QUALITY_SCALE
-    global DEFAULT_TEMPERATURE, DEGREES_UNIT
-    global NTP_IS_MANDATORY
-    global SWITCH1_HYSTERESIS, MANUAL_HYSTERESIS, BUTTON1_HYSTERESIS, TEMP_HYSTERESIS
-    global BE_DAEMON, LOG_LEVEL, LOG_TO_FILE, BIND_ADDR, TCP_PORT, ENABLE_PASSWORD
-    logging.info(u"Reading configuration file")
-    # Parse configuration file. We use just one [PROG_NAME] section.
-    config = ConfigParser.RawConfigParser(CONFIG_DEFAULTS)
-    config.read(CFG_FILE)
-    if not PROG_NAME in config.sections():
-        config.add_section(PROG_NAME)
-    TEMP_SENSOR         = config.get(PROG_NAME, "TEMP_SENSOR")
-    LCD_ENABLED         = config.getboolean(PROG_NAME, "LCD_ENABLED")
-    LCD_CONTRAST        = config.getint(PROG_NAME, "LCD_CONTRAST")
-    LCD_DC              = config.getint(PROG_NAME, "LCD_DC")
-    LCD_RST             = config.getint(PROG_NAME, "LCD_RST")
-    LCD_SPI_PORT        = config.getint(PROG_NAME, "LCD_SPI_PORT")
-    LCD_SPI_DEVICE      = config.getint(PROG_NAME, "LCD_SPI_DEVICE")
-    BUTTON1_GPIO        = config.getint(PROG_NAME, "BUTTON1_GPIO")
-    BUTTON1_ENABLED     = config.getboolean(PROG_NAME, "BUTTON1_ENABLED")
-    BUTTON1_ACTIVE_HIGH = config.getboolean(PROG_NAME, "BUTTON1_ACTIVE_HIGH")
-    SWITCH1_GPIO        = config.getint(PROG_NAME, "SWITCH1_GPIO")
-    SWITCH2_GPIO        = config.getint(PROG_NAME, "SWITCH2_GPIO")
-    RELAY_ACTIVE_HIGH   = config.getboolean(PROG_NAME, "RELAY_ACTIVE_HIGH")
-    WIRED_IFACE         = config.get(PROG_NAME, "WIRED_IFACE")
-    WIFI_IFACE          = config.get(PROG_NAME, "WIFI_IFACE")
-    WIFI_QUALITY_SCALE  = config.getint(PROG_NAME, "WIFI_QUALITY_SCALE")
-    DEFAULT_TEMPERATURE = config.getfloat(PROG_NAME, "DEFAULT_TEMPERATURE")
-    NTP_IS_MANDATORY    = config.getboolean(PROG_NAME, "NTP_IS_MANDATORY")
-    DEGREES_UNIT        = config.get(PROG_NAME, "DEGREES_UNIT")
-    SWITCH1_HYSTERESIS  = config.getint(PROG_NAME, "SWITCH1_HYSTERESIS")
-    MANUAL_HYSTERESIS   = config.getint(PROG_NAME, "MANUAL_HYSTERESIS")
-    BUTTON1_HYSTERESIS  = config.getint(PROG_NAME, "BUTTON1_HYSTERESIS")
-    TEMP_HYSTERESIS     = config.getfloat(PROG_NAME, "TEMP_HYSTERESIS")
-    BE_DAEMON           = config.getboolean(PROG_NAME, "BE_DAEMON")
-    LOG_LEVEL           = config.get(PROG_NAME, "LOG_LEVEL")
-    LOG_TO_FILE         = config.get(PROG_NAME, "LOG_TO_FILE")
-    BIND_ADDR           = config.get(PROG_NAME, "BIND_ADDR")
-    TCP_PORT            = config.getint(PROG_NAME, "TCP_PORT")
-    ENABLE_PASSWORD     = config.get(PROG_NAME, "ENABLE_PASSWORD")
-    # Convert some options from str to proper data type.
-    LOG_LEVEL = DEFINED_LOGLEVELS[LOG_LEVEL]
-    if LOG_TO_FILE.lower() == "false": LOG_TO_FILE = False
-    if DEGREES_UNIT != "F": DEGREES_UNIT = "C"
+class protherm():
+
+    def __init__(self):
+        # Request to terminate the program.
+        self.exit_program = False
+        # Current mode, used as an index of MODES array.
+        self.current_mode = None
+        # Programs loaded from files, indexed by current_mode.
+        self.programs = {}
+        # Network info.
+        self.network_iface = None
+        self.network_addr = None
+        self.network_strength = None
+        # Temperature gauge info.
+        self.gauge1_value = None
+        self.gauge1_required = None
+        # Switch info.
+        self.switch1_state = None
+        self.switch1_last_change = None
+        # Press button info.
+        self.button1_last_press = None
+        # Status of Network Time Protocol: "NTP_OK", "NTP_WARNING" or "NTP_ERROR"
+        self.ntp_status = 'NTP_OK'
+
+
+#-------------------------------------------------------------------------
+# Class object to read configuration file and store options value.
+#-------------------------------------------------------------------------
+class read_config():
+
+    def __init__(self, config_file):
+        # Dictionary of config defaults (require all string values).
+        CONFIG_DEFAULTS = {
+            # Temperature sensor device ID.
+            "TEMP_SENSOR": '/sys/bus/w1/devices/28-0000067bc546/w1_slave',
+            # PCD8544 LCD settings and Raspberry Pi SPI pin connections.
+            "LCD_ENABLED": 'True',
+            "LCD_BIAS": '5',
+            "LCD_CONTRAST": '55',
+            # GPIO used for SPI Data/Command
+            "LCD_DC": '23',
+            # GPIO used for SPI Chip Select
+            "LCD_CS": '8',
+            # GPIO used for SPI Reset
+            "LCD_RST": '24',
+            "LCD_SPI_DEVICE": '0',
+            "LCD_SPI_PORT": '0',
+            "LCD_WHITE": '255',
+            "LCD_BLACK": '0',
+            # GPIO connected to button
+            "BUTTON1_GPIO": '2',
+            "BUTTON1_ENABLED": 'True',
+            # Button connects the GPIO to 3.3 v (active high) or to ground.
+            "BUTTON1_ACTIVE_HIGH": 'False',
+            # GPIO connected to switch relays.
+            "SWITCH1_GPIO": '14',
+            "SWITCH2_GPIO": '15',
+            # Relay module board uses "active high" signaling.
+            "RELAY_ACTIVE_HIGH": 'False',
+            # Networking.
+            "WIRED_IFACE": 'eth0',
+            "WIFI_IFACE": 'wlan0',
+            # Link quality reported by iwconfig, usually is 100-based.
+            "WIFI_QUALITY_SCALE": '100',
+            # Default temperature if no program is defined for a given time.
+            "DEFAULT_TEMPERATURE": '15',
+            # Switch to DEFAULT_TEMPERATURE if NTP status is "NTP_ERROR".
+            "NTP_IS_MANDATORY": 'True',
+            # Use Celsius or Fahrenheit ("C" or "F").
+            "DEGREES_UNIT": 'C',
+            # Hysteresis times before changing switch state.
+            # Hysteresis in program mode.
+            "SWITCH1_HYSTERESIS": '300',
+            # Hysteresis in manual (ON/OFF) mode.
+            "MANUAL_HYSTERESIS": '20',
+            # Hysteresis after pressing button.
+            "BUTTON1_HYSTERESIS": '20',
+            # Programmed temperature hysteresis for changing switch state.
+            "TEMP_HYSTERESIS": '0.2',
+            # Run as a daemon and logging options.
+            "BE_DAEMON": 'True',
+            # From logging module: NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL.
+            "LOG_LEVEL": 'INFO',
+            # False for syslog logging, filename for file logging.
+            "LOG_TO_FILE": 'False',
+            "LOG_FORMAT": '%(asctime)s %(module)s: %(levelname)s %(message)s',
+            "LOG_FMT_DATE": '%Y-%m-%d %H:%M:%S',
+            # Listen to TCP port for commands.
+            "BIND_ADDR": '127.0.0.1',
+            "TCP_PORT": '7438',
+            # Use the old Adafruit_Nokia_LCD instead of adafruit_pcd8544.
+            "OLD_LCD_LIBRARY": 'False'
+        }
+        logging.info('Reading configuration file')
+        # Parse configuration file. We use just one [PROG_NAME] section.
+        config = configparser.ConfigParser(interpolation=None)
+        config['DEFAULT'] = CONFIG_DEFAULTS
+        config.read(config_file)
+        if not PROG_NAME in config.sections():
+            config.add_section(PROG_NAME)
+        self.TEMP_SENSOR         = config.get(PROG_NAME, "TEMP_SENSOR")
+        self.LCD_ENABLED         = config.getboolean(PROG_NAME, "LCD_ENABLED")
+        self.LCD_BIAS            = config.getint(PROG_NAME, "LCD_BIAS")
+        self.LCD_CONTRAST        = config.getint(PROG_NAME, "LCD_CONTRAST")
+        self.LCD_DC              = config.getint(PROG_NAME, "LCD_DC")
+        self.LCD_CS              = config.getint(PROG_NAME, "LCD_CS")
+        self.LCD_RST             = config.getint(PROG_NAME, "LCD_RST")
+        self.LCD_SPI_DEVICE      = config.getint(PROG_NAME, "LCD_SPI_DEVICE")
+        self.LCD_SPI_PORT        = config.getint(PROG_NAME, "LCD_SPI_PORT")
+        self.LCD_BLACK           = config.getint(PROG_NAME, "LCD_BLACK")
+        self.LCD_WHITE           = config.getint(PROG_NAME, "LCD_WHITE")
+        self.BUTTON1_GPIO        = config.getint(PROG_NAME, "BUTTON1_GPIO")
+        self.BUTTON1_ENABLED     = config.getboolean(PROG_NAME, "BUTTON1_ENABLED")
+        self.BUTTON1_ACTIVE_HIGH = config.getboolean(PROG_NAME, "BUTTON1_ACTIVE_HIGH")
+        self.SWITCH1_GPIO        = config.getint(PROG_NAME, "SWITCH1_GPIO")
+        self.SWITCH2_GPIO        = config.getint(PROG_NAME, "SWITCH2_GPIO")
+        self.RELAY_ACTIVE_HIGH   = config.getboolean(PROG_NAME, "RELAY_ACTIVE_HIGH")
+        self.WIRED_IFACE         = config.get(PROG_NAME, "WIRED_IFACE")
+        self.WIFI_IFACE          = config.get(PROG_NAME, "WIFI_IFACE")
+        self.WIFI_QUALITY_SCALE  = config.getint(PROG_NAME, "WIFI_QUALITY_SCALE")
+        self.DEFAULT_TEMPERATURE = config.getfloat(PROG_NAME, "DEFAULT_TEMPERATURE")
+        self.NTP_IS_MANDATORY    = config.getboolean(PROG_NAME, "NTP_IS_MANDATORY")
+        self.DEGREES_UNIT        = config.get(PROG_NAME, "DEGREES_UNIT")
+        self.SWITCH1_HYSTERESIS  = config.getint(PROG_NAME, "SWITCH1_HYSTERESIS")
+        self.MANUAL_HYSTERESIS   = config.getint(PROG_NAME, "MANUAL_HYSTERESIS")
+        self.BUTTON1_HYSTERESIS  = config.getint(PROG_NAME, "BUTTON1_HYSTERESIS")
+        self.TEMP_HYSTERESIS     = config.getfloat(PROG_NAME, "TEMP_HYSTERESIS")
+        self.BE_DAEMON           = config.getboolean(PROG_NAME, "BE_DAEMON")
+        self.LOG_LEVEL           = config.get(PROG_NAME, "LOG_LEVEL")
+        self.LOG_TO_FILE         = config.get(PROG_NAME, "LOG_TO_FILE")
+        self.LOG_FORMAT          = config.get(PROG_NAME, "LOG_FORMAT")
+        self.LOG_FMT_DATE        = config.get(PROG_NAME, "LOG_FMT_DATE")
+        self.BIND_ADDR           = config.get(PROG_NAME, "BIND_ADDR")
+        self.TCP_PORT            = config.getint(PROG_NAME, "TCP_PORT")
+        self.OLD_LCD_LIBRARY     = config.getboolean(PROG_NAME, "OLD_LCD_LIBRARY")
+        # Convert some options from str to proper data type.
+        self.LOG_LEVEL = DEFINED_LOGLEVELS[self.LOG_LEVEL]
+        if self.LOG_TO_FILE.lower() == "false":
+            self.LOG_TO_FILE = False
+        if self.DEGREES_UNIT != "F":
+            self.DEGREES_UNIT = "C"
+        # Realy state: can be active-high or active-low.
+        self.RELAY_ON  = self.RELAY_ACTIVE_HIGH
+        self.RELAY_OFF = not self.RELAY_ACTIVE_HIGH
+
+
+#-------------------------------------------------------------------------
+# Execute the callback function forever at specified intervals.
+#-------------------------------------------------------------------------
+class forever_timer:
+
+    def __init__(self, name, interval, callback, *argv):
+        self.name = name
+        self.base_interval = interval
+        self.callback = callback
+        self.argv = argv
+        logging.info(f'Starting forever_timer "{self.name}"')
+        self.running = True
+        self.next_time = time.time() + self.base_interval
+        self.timer = threading.Timer(self.base_interval, self.execute)
+        self.timer.start()
+
+    def execute(self):
+        logging.debug(f'Executing forever_timer "{self.name}"')
+        self.callback(*self.argv)
+        if self.running:
+            self.next_time += self.base_interval
+            interval = self.next_time - time.time()
+            if interval <= 0:
+                logging.warning(f'Timer "{self.name}": callback too slow or interval too short')
+                interval = self.base_interval
+                self.next_time = time.time() + interval
+            self.timer = threading.Timer(interval, self.execute)
+            self.timer.start()
+
+    def stop(self):
+        logging.info(f'Stopping forever_timer "{self.name}"')
+        if self.running:
+            self.running = False
+            self.timer.cancel()
+
+
+#-------------------------------------------------------------------------
+# Class to handle the PCD8544 LCD display (new adafruit_pcd8544 library).
+#-------------------------------------------------------------------------
+class lcd_pcd8544:
+
+    def __init__(self, cfg):
+        logging.info('Using adafruit_pcd8544 library')
+        import board
+        import busio
+        import digitalio
+        import adafruit_pcd8544
+        BOARD_GPIO = {
+            2:  board.D2, 3:  board.D3, 4:  board.D4,
+            7:  board.D7, 8:  board.D8, 9:  board.D9,
+            10: board.D10, 11: board.D11, 14: board.D14,
+            15: board.D15, 17: board.D17, 18: board.D18,
+            22: board.D22, 23: board.D23, 24: board.D24,
+            25: board.D25, 27: board.D27
+        }
+        self.device = '/dev/spidev%d.%d' % (cfg.LCD_SPI_DEVICE, cfg.LCD_SPI_PORT)
+        self.enabled = cfg.LCD_ENABLED
+        self.black = cfg.LCD_BLACK
+        self.white = cfg.LCD_WHITE
+        if self.enabled and not os.access(self.device, os.W_OK):
+            logging.error('Device %s is not accessible, disabling LCD' % (self.device,))
+            self.enabled = False
+        if self.enabled:
+            spi = busio.SPI(board.SCK, MOSI=board.MOSI)
+            dc = digitalio.DigitalInOut(BOARD_GPIO[cfg.LCD_DC])
+            cs = digitalio.DigitalInOut(BOARD_GPIO[cfg.LCD_CS])
+            reset = digitalio.DigitalInOut(BOARD_GPIO[cfg.LCD_RST])
+            self.pcd8544 = adafruit_pcd8544.PCD8544(spi, dc, cs, reset)
+            self.reset(force_show=True)
+            self.width = self.pcd8544.width
+            self.height = self.pcd8544.height
+        else:
+            self.width = 84
+            self.height = 48
+        # Create an image buffer and get the drawable object.
+        self.image = Image.new('1', (self.width, self.height))
+        self.draw = ImageDraw.Draw(self.image)
+        # Draw a white filled box to clear the image.
+        self.draw.rectangle((0, 0, self.width, self.height), outline=self.white, fill=self.white)
+        # Load some fonts.
+        self.font_bcmp16 = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'), 16)
+        self.font_bcnd16 = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),  16)
+        self.font_bcmp8  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'),  8)
+        self.font_bcnd8  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),   8)
+        self.font_cnd8   = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed.ttf'),        8)
+        # Load some icons and convert to 1 bit color.
+        self.icon = {}
+        self.icon['fire']    = Image.open(os.path.join(ICONS_DIR, 'fire.ppm')).convert(mode='1')
+        self.icon['blank']   = Image.open(os.path.join(ICONS_DIR, 'blank.ppm')).convert(mode='1')
+        self.icon['ethlink'] = Image.open(os.path.join(ICONS_DIR, 'ethlink.ppm')).convert(mode='1')
+        for n in (0, 25, 50, 75, 100):
+            icon = 'signal%03d' % (n,)
+            file = 'signal%03d.ppm' % (n,)
+            self.icon[icon] = Image.open(os.path.join(ICONS_DIR, file)).convert(mode='1')
+        # Threading semaphore to access the LCD.
+        self.sema = threading.BoundedSemaphore()
+        self.show_image()
+
+    def reset(self, force_show=False):
+        # TODO: Don't use global variables.
+        global thermostat
+        # Sometimes the LCD gets corrupted (power problem?): workaround.
+        if self.enabled:
+            logging.debug('Reset LCD display')
+            # Unset network data to force display refresh.
+            thermostat.network_addr = None
+            thermostat.network_strength = None
+            self.pcd8544.reset()
+            self.pcd8544.bias = cfg.LCD_BIAS
+            self.pcd8544.contrast = cfg.LCD_CONTRAST
+            self.pcd8544.fill(self.white)
+            self.pcd8544.invert = True
+            if force_show:
+                self.pcd8544.show()
+
+    def show_image(self):
+        if self.enabled:
+            with self.sema:
+                self.pcd8544.image(self.image)
+                self.pcd8544.show()
+
+
+#-------------------------------------------------------------------------
+# Class to handle the PCD8544 display (old Adafruit_Nokia_LCD library).
+#-------------------------------------------------------------------------
+class lcd_pcd8544_old:
+
+    def __init__(self, cfg):
+        logging.info('Using Adafruit_Nokia_LCD library')
+        import Adafruit_Nokia_LCD as LCD
+        import Adafruit_GPIO.SPI as SPI
+        self.device = '/dev/spidev%d.%d' % (cfg.LCD_SPI_DEVICE, cfg.LCD_SPI_PORT)
+        self.enabled = cfg.LCD_ENABLED
+        self.black = cfg.LCD_BLACK
+        self.white = cfg.LCD_WHITE
+        if self.enabled and not os.access(self.device, os.W_OK):
+            logging.error('Device %s is not accessible, disabling LCD' % (self.device,))
+            self.enabled = False
+        if self.enabled:
+            LCD_SPI_PORT = 0
+            self.pcd8544 = LCD.PCD8544(cfg.LCD_DC, cfg.LCD_RST, spi=SPI.SpiDev(cfg.LCD_SPI_PORT, cfg.LCD_SPI_DEVICE, max_speed_hz=4000000))
+            self.reset(force_show=True)
+        self.width = 84
+        self.height = 48
+        # Create an image buffer and get the drawable object.
+        self.image = Image.new('1', (self.width, self.height))
+        self.draw = ImageDraw.Draw(self.image)
+        # Draw a white filled box to clear the image.
+        self.draw.rectangle((0, 0, self.width, self.height), outline=self.white, fill=self.white)
+        # Load some fonts.
+        self.font_bcmp16 = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'), 16)
+        self.font_bcnd16 = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),  16)
+        self.font_bcmp8  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'),  8)
+        self.font_bcnd8  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),   8)
+        self.font_cnd8   = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed.ttf'),        8)
+        # Load some icons and convert to 1 bit color.
+        self.icon = {}
+        self.icon['fire']    = Image.open(os.path.join(ICONS_DIR, 'fire.ppm')).convert(mode='1')
+        self.icon['blank']   = Image.open(os.path.join(ICONS_DIR, 'blank.ppm')).convert(mode='1')
+        self.icon['ethlink'] = Image.open(os.path.join(ICONS_DIR, 'ethlink.ppm')).convert(mode='1')
+        for n in (0, 25, 50, 75, 100):
+            icon = 'signal%03d' % (n,)
+            file = 'signal%03d.ppm' % (n,)
+            self.icon[icon] = Image.open(os.path.join(ICONS_DIR, file)).convert(mode='1')
+        # Threading semaphore to access the LCD.
+        self.sema = threading.BoundedSemaphore()
+        self.show_image()
+
+    def reset(self, force_show=False):
+        # TODO: Don't use global variables.
+        global thermostat
+        # Sometimes the LCD gets corrupted (power problem?): workaround.
+        if self.enabled:
+            logging.debug('Reset LCD display')
+            # Unset network data to force display refresh.
+            thermostat.network_addr = None
+            thermostat.network_strength = None
+            self.pcd8544.begin(contrast=cfg.LCD_CONTRAST)
+            self.pcd8544.clear()
+            if force_show:
+                self.pcd8544.display()
+
+    def show_image(self):
+        #self.image = Image.open('/root/happycat_lcd.ppm').convert('1')
+        if self.enabled:
+            with self.sema:
+                self.pcd8544.image(self.image)
+                self.pcd8544.display()
+
+
 
 #-------------------------------------------------------------------------
 # Check if NTP server on localhost has a valid reference time.
 #-------------------------------------------------------------------------
 def ntp_check_sync():
-    global time_ntp_status
+    global thermostat
 
     valid_server_stratum = valid_reference_timestamp = False
     sync_age = None
-
     try:
         c = ntplib.NTPClient()
         response = c.request('127.0.0.1', version=3)
@@ -366,35 +528,38 @@ def ntp_check_sync():
         if response.ref_timestamp > 0.0:
             valid_reference_timestamp = True
             sync_age = time.time() - response.ref_time
-    except:
-        logging.error(u"NTP request failed: %s" % (sys.exc_info()[0]))
+    except Exception as ex:
+        logging.error('Exception in NTP request: %s' % (ex.__class__.__name__,))
 
     if not valid_reference_timestamp or not valid_server_stratum:
-        if time_ntp_status != "NTP_ERROR":
-            logging.error(u"NTP not syncronized, system time is unknown")
-        time_ntp_status = "NTP_ERROR"
+        if thermostat.ntp_status != 'NTP_ERROR':
+            logging.error('NTP not syncronized, system time is unknown')
+        thermostat.ntp_status = 'NTP_ERROR'
     else:
         if sync_age == None:
-            time_ntp_status = "NTP_WARNING"
-            logging.warning(u"NTP reference time is unknown")
+            thermostat.ntp_status = 'NTP_WARNING'
+            logging.warning('NTP reference time is unknown')
         elif sync_age > NTP_MAX_AGE:
-            time_ntp_status = "NTP_WARNING"
-            logging.warning(u"NTP reference time is %d seconds old" % (int(sync_age)))
+            thermostat.ntp_status = 'NTP_WARNING'
+            logging.warning('NTP reference time is %d seconds old' % (int(sync_age),))
         else:
-            if time_ntp_status != "NTP_OK":
-                logging.info(u"NTP is now syncronized")
-            time_ntp_status = "NTP_OK"
+            if thermostat.ntp_status != 'NTP_OK':
+                logging.info('NTP is now syncronized')
+            thermostat.ntp_status = 'NTP_OK'
+
 
 #-------------------------------------------------------------------------
 # Handler for TCP request.
 #-------------------------------------------------------------------------
-class socket_tcp_handler(SocketServer.StreamRequestHandler):
+class socket_tcp_handler(socketserver.StreamRequestHandler):
+
     # Allow very short time for client to send command.
     timeout = 5
+
     def handle(self):
         try:
             self.data = self.request.recv(1024).strip().decode('utf-8')
-            msg = u"TCP client %s sent command '%s'" % (self.client_address[0], self.data)
+            msg = 'TCP client %s sent command "%s"' % (self.client_address[0], self.data)
             logging.info(msg)
             if self.data.upper() == 'STATS':
                 self.request.sendall(get_stats().encode('utf-8'))
@@ -402,29 +567,30 @@ class socket_tcp_handler(SocketServer.StreamRequestHandler):
                 reply = ",".join([v for (k, v) in sorted(MODES.items())])
                 self.request.sendall(reply.encode('utf-8'))
             elif self.data.upper() == 'PROGS':
-                reply = ",".join([v for (k, v) in MODES.iteritems() if k not in MANUAL_MODES])
+                reply = ",".join([v for (k, v) in MODES.items() if k not in MANUAL_MODES])
                 self.request.sendall(reply.encode('utf-8'))
             elif self.data.upper().startswith('SET '):
                 requested_mode = self.data[4:]
                 if requested_mode in MODES.values():
                     # Search MODES dictionary key by value.
-                    n = dict((v, k) for k, v in MODES.iteritems())[requested_mode]
+                    n = dict((v, k) for k, v in MODES.items())[requested_mode]
                     msg = u"Mode '%s' = '%d'" % (requested_mode, n)
                     logging.info(msg)
                     reply = u"OK: Setting mode \"%s\"" % (requested_mode,)
                     self.request.sendall(reply.encode('utf-8'))
                     mode_change(n)
                 else:
-                    reply = u"ERROR: Mode \"%s\" does not exists" % (requested_mode,)
+                    reply = 'ERROR: Mode "%s" does not exists' % (requested_mode,)
                     self.request.sendall(reply.encode('utf-8'))
             else:
-                self.request.sendall(u'Unknown command\n'.encode('utf-8'))
+                self.request.sendall('Unknown command\n'.encode('utf-8'))
         except (socket.timeout):
-            logging.error(u"Socket timeout")
-        except:
-            logging.error(u"Unexpected error in socket handling: '%s'" % (sys.exc_info()[0]))
+            logging.error('Socket timeout')
+        except Exception as ex:
+            logging.error('Unexpected error in socket handling: %s' % (ex.__class__.__name__,))
         finally:
             self.request.close()
+
 
 #-------------------------------------------------------------------------
 # Prepare shared memory directory (so some sanity checks).
@@ -459,19 +625,21 @@ def shm_initialize():
         except:
             logging.error(u"Cannot create directory '%s'" % (SHM_RRA))
 
+
 #-------------------------------------------------------------------------
 # Load programmed temperatures from file. Return a sorted list.
 #-------------------------------------------------------------------------
 def load_program(prog_n):
+    global cfg
 
     filename = os.path.join(DATA_DIR, "%s.txt" % (MODES[prog_n]))
     # Make a dictionary of {time: temperature} to avoid duplicate keys,
     # fill it with at least the first value.
-    temperatures = {0: DEFAULT_TEMPERATURE}
+    temperatures = {0: cfg.DEFAULT_TEMPERATURE}
     try:
         f = open(filename, "r")
     except:
-        logging.error(u"Error reading file '%s'" % (filename))
+        logging.error(f'Error reading file "{filename}"')
     else:
         try:
             p = re.compile("^(\d)\s+(\d\d):(\d\d)\s+(\d+\.\d+)$")
@@ -510,33 +678,35 @@ def load_program(prog_n):
         program.append((minute, temperatures[minute]))
     return program
 
+
 #-------------------------------------------------------------------------
 # (Re)load all programs from files.
 #-------------------------------------------------------------------------
 def read_heating_programs():
-    global programs
+    global thermostat
 
-    logging.info(u"Reading heating programs from files")
+    logging.info('Reading heating programs from files')
     for m in sorted(MODES):
         if m in MANUAL_MODES:
             continue
         else:
-            programs[m] = load_program(m)
+            thermostat.programs[m] = load_program(m)
+
 
 #-------------------------------------------------------------------------
 # Search programs from programmed temperature.
 #-------------------------------------------------------------------------
 def programmed_temp(time):
-    global programs, current_mode, time_ntp_status
+    global cfg, thermostat
 
-    if current_mode in MANUAL_MODES:
+    if thermostat.current_mode in MANUAL_MODES:
         return None
-    elif NTP_IS_MANDATORY and time_ntp_status == "NTP_ERROR":
-        return DEFAULT_TEMPERATURE
+    elif cfg.NTP_IS_MANDATORY and thermostat.ntp_status == 'NTP_ERROR':
+        return cfg.DEFAULT_TEMPERATURE
     else:
-        program = programs[current_mode]
+        program = thermostat.programs[thermostat.current_mode]
         minute = time.tm_wday * (24 * 60) + time.tm_hour * 60 + time.tm_min
-        logging.debug(u"Searching minute %s in program '%s'" % (minute, MODES[current_mode]))
+        logging.debug('Searching minute %s in program "%s"' % (minute, MODES[thermostat.current_mode]))
         keys = [r[0] for r in program]
         if minute >= keys[-1]:
             index = len(keys) - 1
@@ -544,461 +714,360 @@ def programmed_temp(time):
             index = bisect.bisect_right(keys, minute) - 1
         return program[index][1]
 
+
 #-------------------------------------------------------------------------
 # Read gauge1 float value, return None if not available or error.
 #-------------------------------------------------------------------------
 def gauge1_read():
-    global gauge1_value
+    global cfg, thermostat
 
     new_value = None
     try:
-        f = open(TEMP_SENSOR, "r")
-    except:
-        logging.error(u"Opening temperature sensor: %s" % (sys.exc_info()[0]))
-        pass
+        f = open(cfg.TEMP_SENSOR, 'r')
+    except Exception as ex:
+        logging.error('Exception opening temperature sensor: %s' % (ex.__class__.__name__,))
     else:
         try:
             data = f.readline().split()
             # 21 01 4b 46 7f ff 0f 10 4b : crc=4b YES
-            if data[11] != "YES":
-                logging.error(u"Bad CRC from temperature sensor: '%s %s'" % (data[10], data[11]))
+            if data[11] != 'YES':
+                logging.error('Bad CRC from temperature sensor: "%s %s"' % (data[10], data[11]))
             else:
                 data = f.readline().split()
                 # 21 01 4b 46 7f ff 0f 10 4b t=18062
-                logging.debug(u"Temperature raw data is '%s'" % (data[9],))
+                logging.debug('Temperature raw data is "%s"' % (data[9],))
                 if data[9].startswith("t="):
                     try:
                         new_value = float(data[9][2:]) / 1000
                     except:
-                        logging.error(u"Invalid temperature data: '%s'" % (data[9],))
+                        logging.error('Invalid temperature data: "%s"' % (data[9],))
                         new_value = None
                 else:
-                    logging.error(u"Invalid temperature data: '%s'" % (data[9],))
-        except:
-            logging.error(u"Reading temperature sensor: %s" % (sys.exc_info()[0]))
-            pass
+                    logging.error('Invalid temperature data: "%s"' % (data[9],))
+        except Exception as ex:
+            logging.error('Reading temperature sensor: %s' % (ex.__class__.__name__,))
         finally:
             f.close()
-    gauge1_value = new_value
+    thermostat.gauge1_value = new_value
 
-    if gauge1_value != None:
-        logging.debug(u"Value of gauge1 is %.2f" % (gauge1_value))
+    if thermostat.gauge1_value != None:
+        logging.debug('Value of gauge1 is %.2f' % (thermostat.gauge1_value,))
     else:
-        logging.debug(u"Error reading gauge1")
-    return gauge1_value
+        logging.debug('Error reading gauge1')
+    return thermostat.gauge1_value
 
-#-------------------------------------------------------------------------
-# Initialize the LCD display.
-#-------------------------------------------------------------------------
-def lcd_initialize():
-    # Config LCD_ENABLED must be global so we can alter its content.
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, LCD_ENABLED
-
-    device = "/dev/spidev0.%s" % (LCD_SPI_DEVICE)
-    if LCD_ENABLED and not os.access(device, os.W_OK):
-        logging.error(u"Device %s is not accessible, disabling LCD" % (device))
-        LCD_ENABLED = False
-
-    if LCD_ENABLED:
-        lcd_disp = LCD.PCD8544(LCD_DC, LCD_RST, spi=SPI.SpiDev(LCD_SPI_PORT, LCD_SPI_DEVICE, max_speed_hz=4000000))
-        lcd_disp.begin(contrast=LCD_CONTRAST)
-        lcd_disp.clear()
-        lcd_disp.display()
-
-    # Create an image buffer and get the drawable object.
-    lcd_image = Image.new('1', (LCD.LCDWIDTH, LCD.LCDHEIGHT))
-    lcd_draw = ImageDraw.Draw(lcd_image)
-    # Draw a white filled box to clear the image.
-    lcd_draw.rectangle((0,0,LCD.LCDWIDTH,LCD.LCDHEIGHT), outline=255, fill=255)
-
-    # Load some fonts.
-    lcd_font['bcmp16'] = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'), 16)
-    lcd_font['bcnd16'] = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),  16)
-    lcd_font['bcmp8']  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_compressed_bold.ttf'),  8)
-    lcd_font['bcnd8']  = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed_bold.ttf'),   8)
-    lcd_font['cnd8']   = ImageFont.truetype(os.path.join(FONTS_DIR, 'pf_tempesta_seven_condensed.ttf'),        8)
-
-    # Load some icons and convert to 1 bit color.
-    lcd_icon['fire']    = Image.open(os.path.join(ICONS_DIR, 'fire.ppm')).convert('1')
-    lcd_icon['blank']   = Image.open(os.path.join(ICONS_DIR, 'blank.ppm')).convert('1')
-    lcd_icon['ethlink'] = Image.open(os.path.join(ICONS_DIR, 'ethlink.ppm')).convert('1')
-    for n in (0, 25, 50, 75, 100):
-        icon = u"signal%03d" % (n)
-        file = u"signal%03d.ppm" % (n)
-        lcd_icon[icon] = Image.open(os.path.join(ICONS_DIR, file)).convert('1')
-
-#-------------------------------------------------------------------------
-# Sometimes the LCD gets corrupted (power problem?): workaround.
-#-------------------------------------------------------------------------
-def lcd_reset(force_display=False):
-    global network_addr, network_strength, lcd_disp
-    logging.debug(u"Reset LCD display")
-    # Unset network data to force display refresh.
-    network_addr = None
-    network_strength = None
-    if LCD_ENABLED:
-        lcd_disp.reset()
-        lcd_disp.begin(contrast=LCD_CONTRAST)
-        lcd_disp.clear()
-        if force_display:
-            lcd_disp.display()
 
 #-------------------------------------------------------------------------
 # Show system info, e.g. CPU load, etc.
 #-------------------------------------------------------------------------
-def display_sys():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_sema
+def display_sys(redraw=True):
+    global lcd
 
-    load = u"CPU: %.2f" % (os.getloadavg()[0],)
-    lcd_draw.rectangle((0, 32, 43, 38), outline=255, fill=255)
-    lcd_draw.text((0, 28), load[0:10], font=lcd_font['cnd8'])
-    if LCD_ENABLED:
-        with lcd_sema:
-            lcd_disp.image(lcd_image)
-            lcd_disp.display()
+    load = 'CPU: %.2f' % (os.getloadavg()[1],)  # Load average over the last 5 minutes
+    lcd.draw.rectangle((0, 32, 43, 38), outline=lcd.white, fill=lcd.white)
+    lcd.draw.text((0, 28), load[0:10], font=lcd.font_cnd8, fill=lcd.black)
+    if redraw:
+        lcd.show_image()
+
 
 #-------------------------------------------------------------------------
 # Show temperature (gauge1) on LCD.
 #-------------------------------------------------------------------------
-def display_temperature():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
-    global gauge1_value
+def display_temperature(redraw=True):
+    global cfg, lcd, thermostat
 
     # Range from -55.0 to 125.0 Celsius.
-    if isinstance(gauge1_value, int) or isinstance(gauge1_value, float):
-        if DEGREES_UNIT == "F":
-            display_value = (gauge1_value * 9.0 / 5.0) + 32.0
+    if isinstance(thermostat.gauge1_value, int) or isinstance(thermostat.gauge1_value, float):
+        if cfg.DEGREES_UNIT == 'F':
+            display_value = (thermostat.gauge1_value * 9.0 / 5.0) + 32.0
         else:
-            display_value = gauge1_value
-        label = u"%.1f °%s" % (display_value, DEGREES_UNIT)
+            display_value = thermostat.gauge1_value
+        label = '%.1f °%s' % (display_value, cfg.DEGREES_UNIT)
     else:
-        label = u"N/A °%s" % (DEGREES_UNIT)
-    lcd_draw.rectangle((0, 0, LCD.LCDWIDTH - 1, 13), outline=255, fill=255)
-    lcd_draw.text((0, -8), label, font=lcd_font['bcnd16'])
-    if LCD_ENABLED:
-        with lcd_sema:
-            lcd_disp.image(lcd_image)
-            lcd_disp.display()
+        label = 'N/A °%s' % (cfg.DEGREES_UNIT,)
+    lcd.draw.rectangle((0, 0, lcd.width - 1, 13), outline=lcd.white, fill=lcd.white)
+    lcd.draw.text((0, -8), label, font=lcd.font_bcnd16, fill=lcd.black)
+    if redraw:
+        lcd.show_image()
+
 
 #-------------------------------------------------------------------------
 # Show status of switch1 (fire) on LCD.
 #-------------------------------------------------------------------------
-def display_switch1(status):
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
+def display_switch1(status, redraw=True):
+    global lcd
 
     if status:
         icon = 'fire'
     else:
         icon = 'blank'
-    lcd_image.paste(lcd_icon[icon], (LCD.LCDWIDTH - 32, LCD.LCDHEIGHT - 16))
-    if LCD_ENABLED:
-        with lcd_sema:
-            lcd_disp.image(lcd_image)
-            lcd_disp.display()
+    lcd.image.paste(lcd.icon[icon], (lcd.width - 32, lcd.height - 16))
+    if redraw:
+        lcd.show_image()
+
 
 #-------------------------------------------------------------------------
 # Get carrier status from network interface.
 #-------------------------------------------------------------------------
 def carrier_status(ifname):
 
-    carrier = "0"
+    carrier = 0
     try:
-        f = open(IFACE_CARRIER % (ifname), "r")
-    except:
-        pass
-    else:
-        try:
-            carrier = f.readline().strip()
-            f.close()
-        except:
-            pass
+        with open(IFACE_CARRIER % (ifname,), 'r') as f:
+           carrier = int(f.readline().strip())
+    except Exception as ex:
+        logging.error('Exception reading interface carrier: %s' % (ex.__class__.__name__,))
+    logging.debug('Carrier of interface %s is %s' % (ifname, carrier))
+    return carrier
 
-    logging.debug(u"Carrier of interface %s is %s" % (ifname, carrier))
-    if carrier == "1":
-        return 1
-    else:
-        return 0
 
 #-------------------------------------------------------------------------
 # Return the quality (0 - 100) of wireless interface link.
 #-------------------------------------------------------------------------
 def wifi_quality(ifname):
+    global cfg
+
     strength = 0
-    ifname_tag = ifname + ":"
+    ifname_tag = ifname + ':'
     try:
-        f = open(WIFI_DATA, "r")
-        for line in f.readlines():
-            data = line.strip().split()
-            if data[0] == ifname_tag:
-                logging.debug(u"WiFi signal quality for %s is '%s' (raw data)" % (ifname, data[2]))
-                try:
-                    strength = int(float(data[2]) / WIFI_QUALITY_SCALE * 100)
-                except:
-                    strength = 0
-                if strength < 0:   strength = 0
-                if strength > 100: strength = 100
-                break
-        f.close()
-    except:
-        pass
+        with open(WIFI_DATA, 'r') as f:
+            for line in f.readlines():
+                data = line.strip().split()
+                if data[0] == ifname_tag:
+                    logging.debug('WiFi signal quality for %s is "%s" (raw data)' % (ifname, data[2]))
+                    try:
+                        strength = int(float(data[2]) / cfg.WIFI_QUALITY_SCALE * 100)
+                    except:
+                        strength = 0
+                    if strength < 0:   strength = 0
+                    if strength > 100: strength = 100
+                    break
+    except Exception as ex:
+        logging.error('Exception getting WiFi quality: %s' % (ex.__class__.__name__,))
     return strength
+
 
 #-------------------------------------------------------------------------
 # Get the network signal strength, range 0 - 100 (Ethernet is 100%).
 #-------------------------------------------------------------------------
 def network_status_update():
-    global network_iface, network_addr, network_strength
+    global cfg, thermostat
 
-    if carrier_status(WIRED_IFACE) == 1:
-        network_iface = WIRED_IFACE
-        network_strength = 100
-    elif carrier_status(WIFI_IFACE) == 1:
-        network_iface = WIFI_IFACE
-        network_strength = wifi_quality(WIFI_IFACE)
+    if carrier_status(cfg.WIRED_IFACE) == 1:
+        thermostat.network_iface = cfg.WIRED_IFACE
+        thermostat.network_strength = 100
+    elif carrier_status(cfg.WIFI_IFACE) == 1:
+        thermostat.network_iface = cfg.WIFI_IFACE
+        thermostat.network_strength = wifi_quality(cfg.WIFI_IFACE)
     else:
-        network_iface = None
-        network_strength = 0
+        thermostat.network_iface = None
+        thermostat.network_strength = 0
     try:
-        network_addr = netifaces.ifaddresses(network_iface)[netifaces.AF_INET][0]['addr']
+        thermostat.network_addr = netifaces.ifaddresses(thermostat.network_iface)[netifaces.AF_INET][0]['addr']
     except:
-        network_addr = "Address N/A"
+        thermostat.network_addr = 'Address N/A'
+
 
 #-------------------------------------------------------------------------
 # Show network data: IP address, signal strength diagram, etc.
 #-------------------------------------------------------------------------
-def display_network():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
-    global network_iface, network_addr, network_strength
+def display_network(redraw=True):
+    global cfg, lcd, thermostat
 
-    old_iface    = network_iface
-    old_addr     = network_addr
-    old_strength = network_strength
+    old_iface    = thermostat.network_iface
+    old_addr     = thermostat.network_addr
+    old_strength = thermostat.network_strength
     network_status_update()
 
     # IP address.
-    if network_addr != old_addr:
-        lcd_draw.rectangle((0, 24, 80, 30), outline=255, fill=255)
-        lcd_draw.text((0, 20), u"IP: %s" % (network_addr), font=lcd_font['cnd8'])
-        if LCD_ENABLED:
-            with lcd_sema:
-                lcd_disp.image(lcd_image)
-                lcd_disp.display()
+    if thermostat.network_addr != old_addr:
+        lcd.draw.rectangle((0, 24, 80, 30), outline=lcd.white, fill=lcd.white)
+        lcd.draw.text((0, 20), 'IP: %s' % (thermostat.network_addr), font=lcd.font_cnd8, fill=lcd.black)
+        if redraw:
+            lcd.show_image()
 
     # Signal strength.
-    if network_strength != old_strength or network_iface != old_iface:
-        if network_iface == WIFI_IFACE:
-            normalized = int(round((network_strength / 25.0), 0) * 25)
-            icon = u"signal%03d" % (normalized)
-        elif network_iface == WIRED_IFACE:
-            icon = u"ethlink"
+    if thermostat.network_strength != old_strength or thermostat.network_iface != old_iface:
+        if thermostat.network_iface == cfg.WIFI_IFACE:
+            normalized = int(round((thermostat.network_strength / 25.0), 0) * 25)
+            icon = 'signal%03d' % (normalized,)
+        elif thermostat.network_iface == cfg.WIRED_IFACE:
+            icon = 'ethlink'
         else:
-            icon = u"blank"
-        lcd_image.paste(lcd_icon[icon], (LCD.LCDWIDTH - 16, LCD.LCDHEIGHT - 16))
-        if LCD_ENABLED:
-            with lcd_sema:
-                lcd_disp.image(lcd_image)
-                lcd_disp.display()
+            icon = 'blank'
+        lcd.image.paste(lcd.icon[icon], (lcd.width - 16, lcd.height - 16))
+        if redraw:
+            lcd.show_image()
+
 
 #-------------------------------------------------------------------------
 # Show mode (program, manual ON, manual OFF).
 #-------------------------------------------------------------------------
-def display_mode():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_icon, lcd_sema
-    global gauge1_required, current_mode
+def display_mode(redraw=True):
+    global cfg, lcd, thermostat
 
-    if current_mode in MANUAL_MODES:
-        label = MODES[current_mode]
+    if thermostat.current_mode in MANUAL_MODES:
+        label = MODES[thermostat.current_mode]
     else:
-        label = u"%s => %.1f °%s" % (MODES[current_mode], gauge1_required, DEGREES_UNIT)
+        label = '%s => %.1f °%s' % (MODES[thermostat.current_mode], thermostat.gauge1_required, cfg.DEGREES_UNIT)
 
-    lcd_draw.rectangle((0, 15, 83, 21), outline=255, fill=255)
-    lcd_draw.text((0, 11), label, font=lcd_font['bcnd8'])
-    if LCD_ENABLED:
-        with lcd_sema:
-            lcd_disp.image(lcd_image)
-            lcd_disp.display()
+    lcd.draw.rectangle((0, 15, 83, 21), outline=lcd.white, fill=lcd.white)
+    lcd.draw.text((0, 11), label, font=lcd.font_bcnd8, fill=lcd.black)
+    if redraw:
+        lcd.show_image()
+
 
 #-------------------------------------------------------------------------
 # Show the clock on LCD.
 #-------------------------------------------------------------------------
-def display_clock():
-    global lcd_disp, lcd_draw, lcd_image, lcd_font, lcd_sema
-    global time_ntp_status
+def display_clock(redraw=True):
+    global lcd, thermostat
 
-    lcd_draw.rectangle((0, 41, 46, LCD.LCDHEIGHT - 1), outline=255, fill=255)
-    time_label = time.strftime(u"%H:%M:%S")
-    if time_ntp_status != "NTP_OK": time_label += u" !"
-    lcd_draw.text((0,37), time_label, font=lcd_font['bcmp8'], fill=0)
-    if LCD_ENABLED:
-        with lcd_sema:
-            lcd_disp.image(lcd_image)
-            lcd_disp.display()
+    lcd.draw.rectangle((0, 41, 46, lcd.height - 1), outline=lcd.white, fill=lcd.white)
+    time_label = time.strftime('%H:%M:%S')
+    if thermostat.ntp_status != 'NTP_OK': time_label += ' !'
+    lcd.draw.text((0,37), time_label, font=lcd.font_bcmp8, fill=lcd.black)
+    if redraw:
+        lcd.show_image()
+
 
 #-------------------------------------------------------------------------
 # Cycle through all modes (manual, prog, etc.)
 #-------------------------------------------------------------------------
 def mode_cycle():
-    global current_mode
+    global thermostat
 
-    if current_mode >= (len(MODES) - 1):
+    if thermostat.current_mode >= (len(MODES) - 1):
         mode_change(0)
     else:
-        mode_change(current_mode + 1)
+        mode_change(thermostat.current_mode + 1)
+
 
 #-------------------------------------------------------------------------
 # Set a new manual or program mode (index of MODES dictionary).
 #-------------------------------------------------------------------------
 def mode_change(mode):
-    global current_mode, gauge1_required
+    global thermostat
 
     if (not mode in MODES.keys()):
-        logging.error(u"Invalid mode %d requested" % (mode))
+        logging.error('Invalid mode %d requested' % (mode,))
         return
 
-    current_mode = mode;
-    logging.info(u"Changing mode to '%s'" % (MODES[current_mode]))
+    thermostat.current_mode = mode;
+    logging.info('Changing mode to "%s"' % (MODES[thermostat.current_mode],))
 
     # Write down current mode to file.
     filename = os.path.join(DATA_DIR, CURR_MODE)
     try:
-        f = open(filename, "w")
-        f.write("%d\n" % (current_mode))
+        f = open(filename, 'w')
+        f.write("%d\n" % (thermostat.current_mode))
         f.close()
     except:
-        logging.error(u"Error writing file '%s'" % (filename))
+        logging.error('Error writing file "%s"' % (filename,))
 
-    gauge1_required = programmed_temp(time.localtime())
+    thermostat.gauge1_required = programmed_temp(time.localtime())
     export_status()
     display_mode()
+
 
 #-------------------------------------------------------------------------
 # Interrupt driven handler for button #1 press.
 #-------------------------------------------------------------------------
 def button1_handler(gpio):
-    global button1_last_press
+    global lcd, thermostat
 
-    previous_press = button1_last_press
-    button1_last_press = time.time()
-    if (button1_last_press - previous_press) > 300:
-        logging.info(u"Executing button1_handler(): LCD reset")
+    previous_press = thermostat.button1_last_press
+    thermostat.button1_last_press = time.time()
+    if (thermostat.button1_last_press - previous_press) > 300:
+        logging.info('Executing button1_handler(): LCD reset')
         # Sometimes the LCD just blanks, may be due electromagnetic
         # interferences on the GPIOs.
         # Workaround: the first button press after a long time is
         # used to reset the LCD instead of cycling program mode.
-        lcd_reset()
+        lcd.reset()
     else:
-        logging.info(u"Executing button1_handler(): cycle program mode")
+        logging.info('Executing button1_handler(): cycle program mode')
         mode_cycle()
 
 #-------------------------------------------------------------------------
-# Timer #1: update display clock.
+# Exec by timer: update temp sensor (gauge1) and relay switch (switch1).
 #-------------------------------------------------------------------------
-def timer1():
-    global exit_program
-    global timer1_next_call, timer1_thread
+def update_thermostat():
+    global cfg, thermostat
 
-    timer1_interval = 1
-    logging.debug(u"Executing timer1()")
-    # Update clock display.
-    display_clock()
-    # Prepare the execution of next timer1.
-    timer1_next_call += timer1_interval
-    interval = timer1_next_call - time.time()
-    if interval <= 0:
-        logging.error(u"Function timer1() too slow or timer1_interval too short")
-        interval = timer1_interval
-        timer1_next_call = time.time() + timer1_interval
-    if not exit_program:
-        timer1_thread = threading.Timer(interval, timer1)
-        timer1_thread.start()
-
-#-------------------------------------------------------------------------
-# Timer #2: update temp sensor (gauge1) and relay switch (switch1)
-#-------------------------------------------------------------------------
-def timer2():
-    global exit_program
-    global timer2_next_call, timer2_thread
-    global switch1_last_change, switch1_state
-    global gauge1_value, gauge1_required, current_mode
-    global button1_last_press
-
-    timer2_interval = 5
-    logging.debug(u"Executing timer2()")
+    logging.debug('Executing update_thermostat()')
     # Update system information data display.
-    display_sys()
+    display_sys(redraw=False)
     # Update network data display.
-    display_network()
+    display_network(redraw=False)
     # Update temperature display.
-    gauge1_value = gauge1_read()
-    display_temperature()
+    thermostat.gauge1_value = gauge1_read()
+    display_temperature(redraw=False)
     # Update mode display.
-    gauge1_required = programmed_temp(time.localtime())
-    display_mode()
+    thermostat.gauge1_required = programmed_temp(time.localtime())
+    display_mode(redraw=False)
+    logging.debug('Temperature is %s, required %s (±%.1f)' %(thermostat.gauge1_value, thermostat.gauge1_required, cfg.TEMP_HYSTERESIS))
 
-    logging.debug(u"Temperature is %s, required %s (±%.1f)" %(gauge1_value, gauge1_required, TEMP_HYSTERESIS))
-
-    if current_mode in MANUAL_MODES:
+    if thermostat.current_mode in MANUAL_MODES:
         # Manual modes.
-        if current_mode == MODE_MANUAL_OFF:
-            manual_state = RELAY_OFF
+        if thermostat.current_mode == MODE_MANUAL_OFF:
+            manual_state = cfg.RELAY_OFF
         else:
-            manual_state = RELAY_ON
-        if manual_state != switch1_state:
-            hyst1 = time.time() - switch1_last_change
-            hyst2 = time.time() - button1_last_press
-            if (hyst1 < MANUAL_HYSTERESIS or hyst2 < BUTTON1_HYSTERESIS):
-                logging.debug(u"Waiting hysteresis time before toggling switch1")
+            manual_state = cfg.RELAY_ON
+        if manual_state != thermostat.switch1_state:
+            hyst1 = time.time() - thermostat.switch1_last_change
+            hyst2 = time.time() - thermostat.button1_last_press
+            if (hyst1 < cfg.MANUAL_HYSTERESIS or hyst2 < cfg.BUTTON1_HYSTERESIS):
+                logging.debug('Waiting hysteresis time before toggling switch1')
             else:
-                switch1_state = manual_state
-                logging.info(u"Mode is '%s', setting switch1 to %s" % (MODES[current_mode], switch1_state == RELAY_ON))
+                thermostat.switch1_state = manual_state
+                logging.info('Mode is "%s", setting switch1 to %s' % (MODES[thermostat.current_mode], thermostat.switch1_state == cfg.RELAY_ON))
                 # Update switch1 status display.
-                display_switch1(switch1_state == RELAY_ON)
-                GPIO.output(SWITCH1_GPIO, switch1_state)
-                switch1_last_change = time.time()
-    elif (gauge1_value != None and gauge1_required != None):
+                display_switch1(thermostat.switch1_state == cfg.RELAY_ON, redraw=False)
+                GPIO.output(cfg.SWITCH1_GPIO, thermostat.switch1_state)
+                thermostat.switch1_last_change = time.time()
+    elif (thermostat.gauge1_value != None and thermostat.gauge1_required != None):
         # Program modes.
-        if (gauge1_value >= (gauge1_required + TEMP_HYSTERESIS) and switch1_state == RELAY_ON) or (gauge1_value < (gauge1_required - TEMP_HYSTERESIS) and switch1_state == RELAY_OFF):
-            hyst1 = time.time() - switch1_last_change
-            hyst2 = time.time() - button1_last_press
-            if (hyst1 < SWITCH1_HYSTERESIS or hyst2 < BUTTON1_HYSTERESIS):
-                logging.debug(u"Waiting hysteresis time before toggling switch1")
+        if (thermostat.gauge1_value >= (thermostat.gauge1_required + cfg.TEMP_HYSTERESIS) and thermostat.switch1_state == cfg.RELAY_ON) or (thermostat.gauge1_value < (thermostat.gauge1_required - cfg.TEMP_HYSTERESIS) and thermostat.switch1_state == cfg.RELAY_OFF):
+            hyst1 = time.time() - thermostat.switch1_last_change
+            hyst2 = time.time() - thermostat.button1_last_press
+            if (hyst1 < cfg.SWITCH1_HYSTERESIS or hyst2 < cfg.BUTTON1_HYSTERESIS):
+                logging.debug('Waiting hysteresis time before toggling switch1')
             else:
-                switch1_state = not switch1_state
-                logging.info(u"Temperature is %.2f, '%s' requires %.2f (±%.1f), setting switch1 to %s" % (gauge1_value, MODES[current_mode], gauge1_required, TEMP_HYSTERESIS, switch1_state == RELAY_ON))
+                thermostat.switch1_state = not thermostat.switch1_state
+                logging.info('Temperature is %.2f, "%s" requires %.2f (±%.1f), setting switch1 to %s' % (thermostat.gauge1_value, MODES[thermostat.current_mode], thermostat.gauge1_required, cfg.TEMP_HYSTERESIS, thermostat.switch1_state == cfg.RELAY_ON))
                 # Update switch1 status display.
-                display_switch1(switch1_state == RELAY_ON)
-                GPIO.output(SWITCH1_GPIO, switch1_state)
-                switch1_last_change = time.time()
+                display_switch1(thermostat.switch1_state == cfg.RELAY_ON, redraw=False)
+                GPIO.output(cfg.SWITCH1_GPIO, thermostat.switch1_state)
+                thermostat.switch1_last_change = time.time()
 
     export_status()
-    # Prepare the execution of next timer2.
-    timer2_next_call += timer2_interval
-    interval = timer2_next_call - time.time()
-    if interval <= 0:
-        logging.error(u"Function timer2() too slow or timer2_interval too short")
-        interval = timer2_interval
-        timer2_next_call = time.time() + timer2_interval
-    if not exit_program:
-        timer2_thread = threading.Timer(interval, timer2)
-        timer2_thread.start()
+
 
 #-------------------------------------------------------------------------
 # Handle SIGTERM and SIGINT signals.
 #-------------------------------------------------------------------------
 def program_exit(signum, frame):
-    global exit_program
-    logging.info(u"Received exit signal, acting shortly...")
-    exit_program = True
+    global thermostat
+
+    logging.info('Received exit signal, acting shortly...')
+    thermostat.exit_program = True
+
 
 #-------------------------------------------------------------------------
 # Handle SIGHUP signal: reload config and programs.
 #-------------------------------------------------------------------------
 def program_hup(signum, frame):
-    logging.info(u"Received HUP signal")
-    read_config()
+    global cfg, lcd
+
+    logging.info('Received HUP signal')
+    cfg = read_config(CFG_FILE)
+    # Eventually change logging format, cannot change logging
+    # handler (stdout, file or syslog) for a running process.
+    log_handler = logging.getLogger().handlers[0]
+    log_handler.setFormatter(logging.Formatter(cfg.LOG_FORMAT, cfg.LOG_FMT_DATE))
     read_heating_programs()
-    if LCD_ENABLED:
-        lcd_reset()
+    lcd.reset()
 
 #-------------------------------------------------------------------------
 # Handle SIGUSR1 signal (cycle mode).
@@ -1011,188 +1080,196 @@ def program_usr1(signum, frame):
 # Handle SIGUSR2 signal (re-initialize LCD).
 #-------------------------------------------------------------------------
 def program_usr2(signum, frame):
-    logging.info(u"Received USR2 signal, LCD display reset")
-    if LCD_ENABLED:
-        lcd_reset()
+    global lcd
+
+    logging.info('Received USR2 signal, LCD display reset')
+    lcd.reset()
 
 #-------------------------------------------------------------------------
 # Return internal data (from global variables) as a string.
 #-------------------------------------------------------------------------
 def get_stats():
-    global time_ntp_status
-    global network_iface, network_addr, network_strength
-    global current_mode, gauge1_value, gauge1_required, switch1_state
+    global cfg, thermostat
 
     timestamp = int(time.time())
     temp_measured = temp_required = None
-    if isinstance(gauge1_value,    float): temp_measured = int(gauge1_value    * 1000)
-    if isinstance(gauge1_required, float): temp_required = int(gauge1_required * 1000)
-    mode = MODES[current_mode].replace(" ", "_")
-    if (switch1_state == RELAY_ON):
+    if isinstance(thermostat.gauge1_value,    float): temp_measured = int(thermostat.gauge1_value    * 1000)
+    if isinstance(thermostat.gauge1_required, float): temp_required = int(thermostat.gauge1_required * 1000)
+    mode = MODES[thermostat.current_mode].replace(" ", "_")
+    if (thermostat.switch1_state == cfg.RELAY_ON):
         relay_state = 1
     else:
         relay_state = 0
-    return "%s %s %s %s %s %s %s %s %s" % (timestamp, time_ntp_status, network_iface, network_addr, network_strength, mode, temp_measured, temp_required, relay_state)
+    return "%s %s %s %s %s %s %s %s %s" % (timestamp, thermostat.ntp_status, thermostat.network_iface, thermostat.network_addr, thermostat.network_strength, mode, temp_measured, temp_required, relay_state)
+
 
 #-------------------------------------------------------------------------
 # Expose internal data through a file (use shared memory!).
 #-------------------------------------------------------------------------
 def export_status():
-    global lcd_image
+    global lcd
+
+    stats_string = get_stats() + "\n"
     if os.path.isdir(SHM_DIR):
         try:
             tmpf = tempfile.NamedTemporaryFile('w+b', dir=SHM_DIR, prefix=SHM_STATS, delete=False)
-            tmpf.write(get_stats() + "\n")
+            tmpf.write(stats_string.encode('utf-8'))
             tmpf.close
             os.chmod(tmpf.name, 0o644)
             os.rename(tmpf.name, os.path.join(SHM_DIR, SHM_STATS))
-            lcd_image.save(SHM_IMG, "PNG")
-        except:
-            logging.error(u"Error writing data in shared memory files: %s" % (sys.exc_info()[0]))
+            lcd.image.save(SHM_IMG, 'PNG')
+        except Exception as ex:
+            logging.error('Error writing data in shared memory files: %s' % (ex.__class__.__name__,))
+
 
 #-------------------------------------------------------------------------
 # Initialize logging.
 #-------------------------------------------------------------------------
 def log_open():
+    global cfg
 
-    if not BE_DAEMON:
+    if not cfg.BE_DAEMON:
         # Log to stdout.
         handler = logging.StreamHandler(stream=sys.stdout)
-        handler.setFormatter(logging.Formatter(LOG_FMT_FILE, LOG_FMT_DATE))
-    elif LOG_TO_FILE:
+    elif cfg.LOG_TO_FILE:
         # Log to file.
-        handler = logging.FileHandler(filename=LOG_TO_FILE)
-        handler.setFormatter(logging.Formatter(LOG_FMT_FILE, LOG_FMT_DATE))
+        handler = logging.FileHandler(filename=cfg.LOG_TO_FILE)
     else:
         # Log to syslog.
         handler = logging.handlers.SysLogHandler(address='/dev/log')
-        handler.setFormatter(logging.Formatter(LOG_FMT_SYSLOG, LOG_FMT_DATE))
+    handler.setFormatter(logging.Formatter(cfg.LOG_FORMAT, cfg.LOG_FMT_DATE))
+    logger = logging.getLogger()
+    # Remove existing handlers (eventually added by modules).
+    while logger.hasHandlers():
+        logger.removeHandler(logger.handlers[0])
+    logger.setLevel(cfg.LOG_LEVEL)
+    logger.addHandler(handler)
 
-    log = logging.getLogger()
-    log.setLevel(LOG_LEVEL)
-    log.addHandler(handler)
 
 #-------------------------------------------------------------------------
 # Main program loop.
 #-------------------------------------------------------------------------
 def program_main():
-    global lcd_sema
-    global exit_program
-    global timer1_thread, timer1_next_call
-    global timer2_thread, timer2_next_call
-    global switch1_state, switch1_last_change
-    global button1_last_press
-    global current_mode, programs
+    global cfg, lcd, thermostat
 
     os.umask (0o022)
     shm_initialize()
     read_heating_programs()
 
-    logging.info(u"Setting GPIO mode and default state")
+    logging.info('Setting GPIO mode and default state')
     # GPIO access using Raspberry Pi Python library.
     GPIO.setmode(GPIO.BCM)
     # Suppress "This channel is already in use" warning, if restart after crash.
     GPIO.setwarnings(False)
     # Setup relays GPIOs as output and turn off them.
-    GPIO.setup((SWITCH1_GPIO, SWITCH2_GPIO), GPIO.OUT)
-    GPIO.output((SWITCH1_GPIO, SWITCH2_GPIO), RELAY_OFF)
+    GPIO.setup((cfg.SWITCH1_GPIO, cfg.SWITCH2_GPIO), GPIO.OUT)
+    GPIO.output((cfg.SWITCH1_GPIO, cfg.SWITCH2_GPIO), cfg.RELAY_OFF)
     # Set button GPIO as input, default state via software PULL-UP/DOWN.
-    if BUTTON1_ACTIVE_HIGH:
-        GPIO.setup(BUTTON1_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    if cfg.BUTTON1_ACTIVE_HIGH:
+        GPIO.setup(cfg.BUTTON1_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     else:
-        GPIO.setup(BUTTON1_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(cfg.BUTTON1_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-    current_mode = MODE_DEFAULT
+    thermostat.current_mode = MODE_DEFAULT
     filename = os.path.join(DATA_DIR, CURR_MODE)
-    logging.info(u"Reading current mode from '%s'" % (filename))
+    logging.info('Reading current mode from "%s"' % (filename))
     try:
-        f = open(filename, "r")
-        current_mode = int(f.read().strip())
+        f = open(filename, 'r')
+        thermostat.current_mode = int(f.read().strip())
         f.close()
     except:
-        logging.error(u"Error reading file '%s'" % (filename))
-    logging.info(u"Mode is '%s'" % (MODES[current_mode]))
+        logging.error('Error reading file "%s"' % (filename))
+    logging.info('Mode is "%s"' % (MODES[thermostat.current_mode]))
 
-    button1_last_press = time.time()
-    if BUTTON1_ENABLED:
-        logging.info(u"Adding button #1 handler")
-        if BUTTON1_ACTIVE_HIGH:
-            GPIO.add_event_detect(BUTTON1_GPIO, GPIO.RISING, callback=button1_handler, bouncetime=300)
+    thermostat.button1_last_press = time.time()
+    if cfg.BUTTON1_ENABLED:
+        logging.info('Adding button #1 handler')
+        if cfg.BUTTON1_ACTIVE_HIGH:
+            GPIO.add_event_detect(cfg.BUTTON1_GPIO, GPIO.RISING, callback=button1_handler, bouncetime=300)
         else:
-            GPIO.add_event_detect(BUTTON1_GPIO, GPIO.FALLING, callback=button1_handler, bouncetime=300)
+            GPIO.add_event_detect(cfg.BUTTON1_GPIO, GPIO.FALLING, callback=button1_handler, bouncetime=300)
 
-    lcd_sema = threading.BoundedSemaphore()
+    thermostat.switch1_state = cfg.RELAY_OFF
+    thermostat.switch1_last_change = time.time() - cfg.SWITCH1_HYSTERESIS
 
-    logging.info(u"Starting timer #1 for display clock")
-    timer1_next_call = time.time()
-    timer1()
-
-    logging.info(u"Starting timer #2 for temp sensor and relay switch")
-    switch1_state = RELAY_OFF
-    switch1_last_change = time.time() - SWITCH1_HYSTERESIS
-    timer2_next_call = time.time()
-    timer2()
+    # Threads to update the LCD display and the thermostat state.
+    logging.info('Starting timer #1 "display_clock"')
+    timer1_thread = forever_timer('display_clock', 1, display_clock)
+    logging.info('Starting timer #2 "update_thermostat" for temp sensor and relay switch')
+    timer2_thread = forever_timer('update_thermostat', 5, update_thermostat)
 
     # Initialize a TCP socket and run it in a separate thread.
     tcp_server = None
-    if TCP_PORT != 0:
-        logging.info(u"Starting TCP socket on %s:%s" % (BIND_ADDR, TCP_PORT))
+    if cfg.TCP_PORT != 0:
+        logging.info('Starting TCP socket on %s:%s' % (cfg.BIND_ADDR, cfg.TCP_PORT))
         try:
-            SocketServer.TCPServer.allow_reuse_address = True
-            tcp_server = SocketServer.TCPServer((BIND_ADDR, TCP_PORT), socket_tcp_handler)
+            socketserver.TCPServer.allow_reuse_address = True
+            tcp_server = socketserver.TCPServer((cfg.BIND_ADDR, cfg.TCP_PORT), socket_tcp_handler)
             th = threading.Thread(target=tcp_server.serve_forever)
             th.daemon = True
             th.start()
-        except:
-            logging.error(u"Cannot open TCP socket: %s" % (sys.exc_info()[0]))
+        except Exception as ex:
+            logging.error('Cannot open TCP socket: %s' % (ex.__class__.__name__,))
             tcp_server = None
 
 
-    while not exit_program:
-        logging.debug(u"Idle in main loop")
+    #yappi.start()
+    while not thermostat.exit_program:
+        logging.debug('Idle in main loop')
         ntp_check_sync()
         try:
             time.sleep(IDLE_LOOP_TIME)
-        except:
+        except Exception as ex:
+            logging.error('Exiting main loop with exception: %s' % (ex.__class__.__name__,))
             break
 
     if tcp_server != None:
-        logging.info(u"Closing TCP socket")
-        tcp_server.shutdown()
-        tcp_server.server_close()
+        logging.info('Closing TCP socket')
+        tcp_server.socket.close()
 
-    logging.info(u"Cancelling timers")
-    timer2_thread.cancel()
-    timer1_thread.cancel()
+    logging.info('Cancelling timers')
+    timer2_thread.stop()
+    timer1_thread.stop()
     # Allow eventually running handlers to terminate.
-    time.sleep(1)
+    time.sleep(2)
 
-    logging.info(u"Writing data to shared memory file")
+    logging.info('Writing data to shared memory file')
     export_status()
 
-    if LCD_ENABLED:
-        logging.debug(u"Clearing LCD content")
-        lcd_reset(force_display=True)
+    if lcd.enabled:
+        logging.debug('Clearing LCD content')
+        lcd.reset(force_show=True)
 
-    logging.info(u"Cleaning GPIO settings")
+    logging.info('Cleaning GPIO settings')
     GPIO.cleanup()
+
+    ## Retrieve thread stats by their thread id (given by yappi)
+    #yappi.stop()
+    #threads = yappi.get_thread_stats()
+    #for thread in threads:
+    #    print("\n===== Function stats for (%s) (%d)" % (thread.name, thread.id))
+    #    yappi.get_func_stats(ctx_id=thread.id).print_all()
+
 
 #-------------------------------------------------------------------------
 # Entry point.
 #-------------------------------------------------------------------------
 # Read configuration file.
-read_config()
+cfg = read_config(CFG_FILE)
+# Create an object to store working data.
+thermostat = protherm()
 
 # If required: run in foreground and log to stdout.
 if len(sys.argv) > 1:
     if sys.argv[1] == '-f':
-        BE_DAEMON = False
+        cfg.BE_DAEMON = False
 
 # Prepare daemon context.
+# TODO: Check why acquire_timeout does not work: measured 3.5 minutes
 context = daemon.DaemonContext(
     working_directory = '/tmp',
     umask=0o002,
-    pidfile=daemon.pidlockfile.TimeoutPIDLockFile(
+    pidfile=daemon.pidfile.TimeoutPIDLockFile(
         path=PID_FILE,
         acquire_timeout=2),
     signal_map = {
@@ -1203,23 +1280,29 @@ context = daemon.DaemonContext(
         signal.SIGUSR2: program_usr2 }
 )
 
-if BE_DAEMON:
+if cfg.BE_DAEMON:
     log_opened = False
     try:
         with context:
             log_open()
             log_opened = True
-            logging.info(u"Running as daemon")
-            lcd_initialize()
+            logging.info('Running as daemon')
+            if cfg.OLD_LCD_LIBRARY:
+                lcd = lcd_pcd8544_old(cfg)
+            else:
+                lcd = lcd_pcd8544(cfg)
             program_main()
     except Exception as ex:
         if not log_opened:
             log_open()
-        logging.error(u"type %s: %s" % (type(ex), ex.__str__()))
+        logging.error('Exception type %s: %s' % (ex.__class__.__name__, ex.__str__()))
 else:
-    lcd_initialize()
     log_open()
-    logging.info(u"Running in foreground")
+    if cfg.OLD_LCD_LIBRARY:
+        lcd = lcd_pcd8544_old(cfg)
+    else:
+        lcd = lcd_pcd8544(cfg)
+    logging.info('Running in foreground')
     signal.signal(signal.SIGHUP,  program_hup)
     signal.signal(signal.SIGINT,  program_exit)
     signal.signal(signal.SIGTERM, program_exit)
@@ -1227,4 +1310,4 @@ else:
     signal.signal(signal.SIGUSR2, program_usr2)
     program_main()
 
-logging.info(u"Exiting program")
+logging.info('Exiting program')
