@@ -1,11 +1,11 @@
 [Unit]
-Description=Programmable Thermostat Service
+Description=ProTherm Telegram Bot
 After=syslog.target
 
 [Service]
 Type=simple
 WorkingDirectory=/tmp/
-ExecStart=/usr/local/sbin/protherm -f
+ExecStart=/usr/local/sbin/protherm-tbot -f
 
 [Install]
 WantedBy=multi-user.target

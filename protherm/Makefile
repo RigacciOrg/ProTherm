@@ -31,17 +31,19 @@ install-config:
 	install -m 640 -o root -g root -D $(CFGFILE) /etc/$(CFGFILE)
 
 .PHONY: install-sysvinit
+install-sysvinit:
 	install -m 755 -o root -g root -D rc-script.sh /etc/init.d/$(TARGET)
 
 .PHONY: install-systemd
-	install -m 640 -o root -g root -D systemd-unit /etc/systemd/system/$(TARGET)
+install-systemd:
+	install -m 644 -o root -g root -D systemd-unit /etc/systemd/system/$(TARGET).service
 	systemctl daemon-reload
 
 .PHONY: uninstall
 uninstall:
 	-rm $(SBINDIR)/$(TARGET)
 	-rm /etc/init.d/$(TARGET)
-	-rm /etc/systemd/system/$(TARGET)
+	-rm /etc/systemd/system/$(TARGET).service
 	-rm /etc/$(CFGFILE)
 	-rm -f $(addprefix $(ICONDIR)/, $(ICON_FILES))
 	-rm -f $(addprefix $(FONTDIR)/, $(FONT_FILES))
