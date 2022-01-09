@@ -1,47 +1,81 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+protherm-tbot (0.7.0)
+  * Refactoring for Python 3.
+  * Refactoring for python-telegram-bot library 13.3.
+ -- 2021-12-31
 
-# Copyright (C) 2015-2020 Niccolo Rigacci
+protherm-tbot (0.6.3)
+  * Fixed bug in /exclude command.
+  * Added broadcast message when user join chat.
+ -- 2020-04-30
 
-# Author        Niccolo Rigacci <niccolo@rigacci.org>
-#
-# Version 0.6.3  2020-04-30
-#  * Fixed bug in /exclude command.
-#  * Added broadcast message when user join chat.
-#
-# Version 0.6.2  2020-04-30
+protherm-tbot (0.6.2)
+ -- 2020-04-30
 
-# Required Debian packages:
-# python-daemon
+Required Debian packages:
+python3-daemon python3-lockfile python3-python-telegram-bot
 
-# Telegram BOT:
-# https://github.com/nickoala/telepot
-# http://telepot.readthedocs.io/en/latest/reference.html
+Python Telegram Bot:
+https://github.com/python-telegram-bot/python-telegram-bot
+https://python-telegram-bot.readthedocs.io/
+"""
 
-import ConfigParser
-import daemon, daemon.pidlockfile
+import configparser
+import daemon
+import daemon.pidfile
+import datetime
 import lockfile
+import logging
+import logging.handlers
+import os
+import os.path
+import pickle
 import signal
+import socket
+import subprocess
+import sys
+import tempfile
 import threading
-import logging, logging.handlers
-import datetime, os, os.path, pickle, sys, socket, subprocess, tempfile, time
-import telepot
+import time
+
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.error import Unauthorized
+from telegram.constants import CHATACTION_UPLOAD_PHOTO
+
+__author__ = "Niccolo Rigacci"
+__copyright__ = "Copyright 2015-2021 Niccolo Rigacci <niccolo@rigacci.org>"
+__license__ = "GPLv3-or-later"
+__email__ = "niccolo@rigacci.org"
+__version__ = "0.7.0"
 
 # This is the program name.
-PROG_NAME = "protherm-tbot"
+PROG_NAME = 'protherm-tbot'
 # Read configuration from this file.
-CFG_FILE = "/etc/%s.cfg" % (PROG_NAME)
+CFG_FILE = '/etc/%s.cfg' % (PROG_NAME,)
 # Save runtime data in this file.
-CACHE_DIR= "/var/cache/%s" % (PROG_NAME)
-DATA_FILE = "data.pckl"
+CACHE_DIR= '/var/cache/%s' % (PROG_NAME,)
+DATA_FILE = 'data.pckl'
+# Temporary directory in shared memory.
+SHM_DIR = '/run/shm/protherm'
+# Default custom keyboard.
+CUSTOM_KEYBOARD = {'keyboard': [['/temp','/lcd', '/graph', '/help'], ['/set', '/view']], 'resize_keyboard': True}
 
 #-------------------------------------------------------------------------
 # Global variables.
 #-------------------------------------------------------------------------
-bot = None
-exit_program = False
+# The Telegram Bot Updater.
+updater = None
+# Dictionary of active private chats {chat_id: chat_data, ...}
+# The chat_id is actually the user ID.
 active_chats = {}
+# List of user IDs authorized to execute privileged commands.
 authorized_ids = []
+# Changed to True on received signals.
+exit_program = False
+# When to send the "I'm alive" message.
 imalive_wdays = []
 imalive_hours = []
 
@@ -58,22 +92,23 @@ def isint_(s):
 #-------------------------------------------------------------------------
 # Read configuration file. Beware: only string values!
 #-------------------------------------------------------------------------
-DEFAULTS = {
+CONFIG_DEFAULTS = {
     "AUTHORIZED_IDS":  str(''),           # Chat IDs enabled to privileged commands (CSV).
     "BOT_TOKEN":       str(None),
     "BE_DAEMON":       str(True),         # Detach terminal and run in background.
-    "LOG_LEVEL":       str("DEBUG"),
-    "LOG_TO_FILE":     str("False"),
+    "LOG_LEVEL":       str('DEBUG'),
+    "LOG_TO_FILE":     str('False'),
     "STATS_STALE":     str(120),          # Stats data are stale if older than sec.
     "STATS_ERR_MAX":   str(5),            # Warn if reading stats fails more than times.
-    "PROTHERM_HOST":   str("localhost"),  # ProTherm host to read stats data via TCP.
+    "PROTHERM_HOST":   str('localhost'),  # ProTherm host to read stats data via TCP.
     "PROTHERM_PORT":   str(7438),         # ProThemr host is responding on TCP port.
     "IMALIVE_WDAYS":   str('0'),          # Send "I'm alive" message: weekdays, 0 is Monday (CSV).
     "IMALIVE_HOURS":   str('10')          # Send "I'm alive" message: hours (CSV).
 }
 
 # Parse configuration file. We use just one [PROG_NAME] section.
-config = ConfigParser.RawConfigParser(DEFAULTS)
+config = configparser.ConfigParser()
+config['DEFAULT'] = CONFIG_DEFAULTS
 config.read(CFG_FILE)
 if not PROG_NAME in config.sections():
     config.add_section(PROG_NAME)
@@ -91,9 +126,9 @@ IMALIVE_WDAYS   = config.get(PROG_NAME, "IMALIVE_WDAYS")
 IMALIVE_HOURS   = config.get(PROG_NAME, "IMALIVE_HOURS")
 
 # Convert some options from str to other data types.
-authorized_ids = [int(i) for i in AUTHORIZED_IDS.split(",") if isint_(i)]
-imalive_wdays  = [int(i) for i in IMALIVE_WDAYS.split(",") if isint_(i)]
-imalive_hours  = [int(i) for i in IMALIVE_HOURS.split(",") if isint_(i)]
+authorized_ids = [int(i) for i in AUTHORIZED_IDS.split(',') if isint_(i)]
+imalive_wdays  = [int(i) for i in IMALIVE_WDAYS.split(',') if isint_(i)]
+imalive_hours  = [int(i) for i in IMALIVE_HOURS.split(',') if isint_(i)]
 log_levels = {
     "NOTSET": logging.NOTSET,
     "DEBUG": logging.DEBUG,
@@ -103,7 +138,7 @@ log_levels = {
     "CRITICAL": logging.ERROR
 }
 LOG_LEVEL = log_levels[LOG_LEVEL]
-if LOG_TO_FILE == "False": LOG_TO_FILE = False
+if LOG_TO_FILE == 'False': LOG_TO_FILE = False
 
 #-------------------------------------------------------------------------
 # System configuration.
@@ -111,7 +146,17 @@ if LOG_TO_FILE == "False": LOG_TO_FILE = False
 LOG_FMT_SYSLOG = '%(module)s: %(levelname)s %(message)s'
 LOG_FMT_FILE   = '%(asctime)s %(levelname)s %(message)s'
 LOG_FMT_DATE   = '%Y-%m-%d %H:%M:%S'
-PID_FILE       = "/var/run/%s.pid" % (PROG_NAME)
+PID_FILE       = '/var/run/%s.pid' % (PROG_NAME,)
+
+#-------------------------------------------------------------------------
+# Convert a Telegram chat into a simple class, suitable for pickle.
+#-------------------------------------------------------------------------
+class chat_data():
+    def __init__(self, chat):
+        if hasattr(chat, 'id'): self.id = chat.id
+        if hasattr(chat, 'first_name'): self.first_name = chat.first_name
+        if hasattr(chat, 'last_name'): self.last_name = chat.last_name
+        if hasattr(chat, 'username'): self.username = chat.username
 
 #-------------------------------------------------------------------------
 # Make a custom keyboard arranging items in rows.
@@ -134,24 +179,28 @@ def make_custom_keyboard(command, items):
 
 #-------------------------------------------------------------------------
 # Send a message to some chats, return a list of failed ones. If an ID
-# returns telepot.exception.TelegramError, it si removed from
+# returns telegram.error.Unauthorized, it is removed from
 # active_chat global variable.
 # parse_mode = None, Markdown or HTML
 #-------------------------------------------------------------------------
-def broadcast_message(bot, msg, chats, parse_mode=None):
-    global active_chats
-    logging.info(u"Broadcast message to chats IDs: %s" % (chats))
+def broadcast_message(msg, chats, parse_mode=None):
+    global updater, active_chats
+    logging.info('Broadcast message to chats IDs: %s' % (chats.keys(),))
+    unauthorized_ids = []
     failed_ids = []
     for chat_id in chats:
+        logging.info('Sending message "%s" to %s' % (msg, chat_id))
         try:
-            bot.sendMessage(chat_id, msg, parse_mode)
-        except telepot.exception.TelegramError as ex:
-            logging.error(u"TelegramError %s: %s" % (type(ex), ex.__str__()))
-            logging.info(u"TelegramError: removing chat_id %s from active chats" % (chat_id))
-            del active_chats[chat_id]
-        except:
-            logging.error(u"Sending message to %s: %s" % (chat_id, sys.exc_info()[0]))
+            updater.bot.send_message(chat_id, msg, parse_mode)
+        except Unauthorized:
+            logging.info('sendMessage(): telegram.error.Unauthorized: removing chat_id %s from active chats' % (chat_id,))
+            unauthorized_ids.append(chat_id)
+        except Exception as ex:
+            logging.error('Exception sending message to %s: %s' % (chat_id, ex.__class__.__name__))
             failed_ids.append(chat_id)
+    for chat_id in unauthorized_ids:
+        # Bot cannot ignore (or leave) private chats, just remove user_id from list.
+        del active_chats[chat_id]
     return failed_ids
 
 #-------------------------------------------------------------------------
@@ -159,15 +208,15 @@ def broadcast_message(bot, msg, chats, parse_mode=None):
 #-------------------------------------------------------------------------
 def get_response_from_socket(cmd):
     # Open a TCP socket and send command.
-    logging.debug(u"Sending command '%s' to socket" % (cmd))
+    logging.debug('Sending command "%s" to socket' % (cmd))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((PROTHERM_HOST, PROTHERM_PORT))
-        sock.sendall(cmd + "\n")
-        response = sock.recv(1024)
-    except:
+        sock.sendall(cmd.encode('utf-8') + b'\n')
+        response = sock.recv(1024).decode('utf-8')
+    except Exception as ex:
+        logging.error('Exception reading data from socket: %s' % (ex.__class__.__name__,))
         response = None
-        logging.error(u"Reading data from socket: %s" % (sys.exc_info()[0]))
     finally:
         sock.close()
     return response
@@ -203,10 +252,10 @@ def read_stats():
 # Get a Telegram chat object and return a name suitable to display.
 #-------------------------------------------------------------------------
 def display_name(chat):
-    display_name = ""
-    if u'first_name' in chat.keys(): display_name += chat[u'first_name']
-    if u'last_name' in chat.keys(): display_name += " " + chat[u'last_name']
-    if u'username' in chat.keys(): display_name += " @" + chat[u'username']
+    display_name = ''
+    if hasattr(chat, 'first_name') and chat.first_name is not None: display_name += chat.first_name
+    if hasattr(chat, 'last_name')  and chat.last_name  is not None: display_name += ' ' + chat.last_name
+    if hasattr(chat, 'username')   and chat.username   is not None: display_name += " @" + chat.username
     return display_name
 
 #-------------------------------------------------------------------------
@@ -215,67 +264,82 @@ def display_name(chat):
 def temp_message():
     stats = read_stats()
     if stats['timestamp'] != None:
-        stats_time = time.strftime("%H:%M", time.localtime(stats['timestamp']))
+        stats_time = time.strftime('%H:%M', time.localtime(stats['timestamp']))
     else:
-        stats_time = u"(ora ignota!)"
+        stats_time = '(ora ignota!)'
     # Temperatura e programma.
-    if stats['temp'] != None and stats['current_mode'] != None and stats['temp_required'] != None:
-        msg = u'Alle %s la temperatura della stanza è %.2f °C, il programma scelto "%s" prevede una temperatura di %.2f °C.' % (stats_time, stats['temp'], stats['current_mode'], stats['temp_required'])
-    elif stats['temp'] != None and stats['current_mode'] != None:
-        msg = u'Alle %s la temperatura della stanza è %.2f °C, il programma scelto è "%s".' % (stats_time, stats['temp'], stats['current_mode'])
-    elif stats['temp'] != None:
-        msg = u'Alle %s la temperatura della stanza è %.2f °C, il programma scelto è ignoto.' % (stats_time, stats['temp'])
+    if stats['temp'] != None:
+        msg_temp = 'la temperatura ambiente è %.2f °C' % (stats['temp'],)
     else:
-        msg = u'Alle %s temperatura non rilevata e programma scelto sconosciuto.' % (stats_time)
+        msg_temp = 'la temperatura non è stata misurata'
+    if stats['current_mode'] != None:
+        msg_current_mode = 'il programma scelto "%s"' % (stats['current_mode'],)
+    else:
+        msg_current_mode = 'un programma sconosciuto'
+    if stats['temp_required'] != None:
+        msg_temp_required = 'richiede una temperatura di %.2f °C' % (stats['temp_required'],)
+    else:
+        msg_temp_required = 'non richiede una temperatura specificata'
+    msg = 'Alle %s %s, %s %s.' % (stats_time, msg_temp, msg_current_mode, msg_temp_required)
     # Bruciatore.
     if stats['switch1'] == True:
-        msg += u" Il bruciatore è acceso."
+        msg += ' Il bruciatore è acceso.'
     elif stats['switch1'] == False:
-        msg += u" Il bruciatore è spento."
+        msg += ' Il bruciatore è spento.'
     else:
-        msg += u" Stato del bruciatore sconosciuto."
+        msg += ' Stato del bruciatore sconosciuto.'
     # NTP status.
     if stats['time_ntp_status'] != "NTP_OK":
-        msg += u" L'ora non è sincronizzata con NTP!"
+        msg += " L'ora non è sincronizzata con NTP!"
     return msg
 
-#-------------------------------------------------------------------------
-# Process received Telegram messages.
-#-------------------------------------------------------------------------
-def tmsg_handle(msg):
-    global bot, active_chats, authorized_ids
 
-    content_type, chat_type, chat_id = telepot.glance(msg)
-    # content_type: text, voice, photo, audio, document, video, contact, location, ...
+#-------------------------------------------------------------------------
+# Process received Telegram messages (actually a command).
+#-------------------------------------------------------------------------
+def tcmd_handle(update: Update, context: CallbackContext):
+    global active_chats, authorized_ids
+
+    update_id = update.update_id
+    if not hasattr(update, 'message'):
+        logging.warning('Received update %d without message' % (update_id,))
+        return
+    if not hasattr(update.message, 'chat'):
+        logging.warning('Update %d: missing chat in message' % (update_id,))
+        return
+
+    msg = update.message
+    chat = msg.chat
+    command = msg.text
+    #if hasattr(msg, 'audio'):
+    #if hasattr(msg, 'contact'):
+    #if hasattr(msg, 'document'):
+    #if hasattr(msg, 'location'):
+    #if hasattr(msg, 'photo'):
+    #if hasattr(msg, 'voice'):
+
     # chat_type: private, group or channel
-
-    logging.info(u"Handling message, content_type = %s, chat_type = %s, chat_id = %s" % (content_type, chat_type, chat_id))
-    logging.debug(u"Message: %s" % (msg))
+    chat_type = msg.chat.type
+    chat_id = msg.chat.id
+    logging.debug('Handling update %d, chat_type: %s, chat_id: %s' % (update_id, chat_type, chat_id))
 
     if not chat_id in active_chats.keys():
         # This is a new chat: remember it.
-        logging.info("Adding new chat_id %s (%s) to active chats" % (chat_id, display_name(msg['chat'])))
-        active_chats[chat_id] = msg['chat']
-        logging.info("active_chats = %s" % (active_chats))
+        logging.info('Adding new chat_id %s (%s) to active chats' % (chat_id, display_name(chat)))
+        active_chats[chat_id] = chat_data(chat)
+        logging.info('active_chats: %s' % (active_chats.keys(),))
         save_runtime_data()
-        msg = u"L'id %s (%s) è entrato in chat" % (chat_id, display_name(msg['chat']))
-        broadcast_message(bot, msg, active_chats.keys(), parse_mode='Markdown')
+        msg = "L'id %s (%s) è entrato in chat" % (chat_id, display_name(chat))
+        broadcast_message(msg, active_chats, parse_mode='Markdown')
     else:
-        # Save it anyway to catch attribute changes.
-        active_chats[chat_id] = msg['chat']
+        # Save it anyway to catch attributes changes.
+        active_chats[chat_id] = chat_data(chat)
 
-    if content_type != 'text':
-        return
-
-    command = msg['text']
-    logging.info('Got text command: "%s" from %s, chat_id %s' % (command, display_name(msg['from']), chat_id))
-
-    custom_keyboard = {'keyboard': [['/temp','/lcd', '/graph', '/help'], ['/set', '/view']], 'resize_keyboard': True}
-    no_custom_keyboard = {'hide_keyboard': True}
+    logging.info('Got command %s from %s, chat_id %s' % (command, display_name(chat), chat_id))
 
     if command == '/start':
-        bot.sendMessage(chat_id, u"Con questo bot si può comandare il termostato programmabile fatto con il Raspberry-Pi. I comandi principali sono /temp, /lcd e /graph\n\nVedi http://www.rigacci.org/wiki/doku.php/doc/appunti/hardware/raspberrypi_thermostat")
-        bot.sendMessage(chat_id, u"Al posto della tastiera puoi usare i pulsanti qua sotto:", reply_markup=custom_keyboard)
+        update.message.reply_text('Con questo bot si può comandare il termostato programmabile fatto con il Raspberry-Pi. I comandi principali sono /temp, /lcd e /graph\n\nVedi http://www.rigacci.org/wiki/doku.php/doc/appunti/hardware/raspberrypi_thermostat')
+        update.message.reply_text('Al posto della tastiera puoi usare i pulsanti qua sotto:', reply_markup=CUSTOM_KEYBOARD)
 
     elif command == '/help':
         help_msg = """I comandi disponibili sono:
@@ -287,130 +351,162 @@ def tmsg_handle(msg):
 /who chi è in linea con il bot
 /exclude esclude ID utente da chat
 /help mostra questo messaggio"""
-        bot.sendMessage(chat_id, help_msg, reply_markup=custom_keyboard)
+        update.message.reply_text(help_msg, reply_markup=CUSTOM_KEYBOARD)
 
     elif command == '/lcd':
-        bot.sendChatAction(chat_id, 'upload_photo')
-        result = bot.sendPhoto(chat_id, open("/run/shm/protherm/lcd.png", "rb"))
+        try:
+            context.bot.send_chat_action(chat_id, CHATACTION_UPLOAD_PHOTO)
+            result = context.bot.send_photo(chat_id, open(os.path.join(SHM_DIR, 'lcd.png'), 'rb'))
+            logging.debug('Command /lcd: send_photo() returned: %s' % (result,))
+        except Exception as ex:
+            logging.error('Exception in /lcd command: %s' % (ex.__class__.__name__,))
+            msg = "Errore nell'invio dell'immagine LCD."
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
 
     elif command == '/graph':
-        bot.sendChatAction(chat_id, 'upload_photo')
-        result = bot.sendPhoto(chat_id, open("/run/shm/protherm/rra/protherm-day.png", "rb"))
+        try:
+            context.bot.send_chat_action(chat_id, CHATACTION_UPLOAD_PHOTO)
+            result = context.bot.send_photo(chat_id, open(os.path.join(SHM_DIR, 'rra/protherm-day.png'), 'rb'))
+            logging.debug('Command /graph: send_photo() returned: %s' % (result,))
+        except Exception as ex:
+            logging.error('Exception in /graph command: %s' % (ex.__class__.__name__,))
+            msg = "Errore nell'invio del grafico della temperatura."
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
 
     elif command == '/temp':
-        try: msg = temp_message()
-        except: msg = u'Errore durante la lettura dello stato del termostato.'
-        finally: bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+        try:
+            msg = temp_message()
+        except:
+            msg = 'Errore durante la lettura dello stato del termostato.'
+        finally:
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
 
     elif command == '/who':
         if len(active_chats) < 1:
-            msg = u"Nessuno in chat? Possibile? E tu cosa sei?"
+            msg = 'Nessuno in chat? Possibile? E tu cosa sei?'
         else:
             users = []
             for chat in active_chats.values():
-                users.append('%s (%s)' % (display_name(chat), chat['id']))
-            msg = u"Attualmente sto chattando con %s." % (", ".join(users))
-        bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+                users.append('%s (%s)' % (display_name(chat), chat.id))
+            msg = 'Attualmente sto chattando con %s.' % (', '.join(users))
+        update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
 
-    elif command == "/view":
-        progs = get_response_from_socket("PROGS").split(",")
-        keyboard = make_custom_keyboard("/view", progs)
-        keyboard.append(['/help'])
-        progs_keyboard = { 'keyboard': keyboard, 'resize_keyboard': True}
-        msg = u"Scegli il programma da vedere tra quelli disponibili: %s." % (", ".join(progs))
-        bot.sendMessage(chat_id, msg, reply_markup=progs_keyboard)
+    elif command == '/view':
+        try:
+            progs = get_response_from_socket('PROGS').split(',')
+        except:
+            msg = "L'elenco dei programmi non è disponibie."
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
+        else:
+            keyboard = make_custom_keyboard('/view', progs)
+            keyboard.append(['/help'])
+            progs_keyboard = { 'keyboard': keyboard, 'resize_keyboard': True}
+            msg = 'Scegli il programma da vedere tra quelli disponibili: %s.' % (', '.join(progs))
+            update.message.reply_text(msg, reply_markup=progs_keyboard)
 
-    elif command.startswith("/view "):
+    elif command.startswith('/view '):
         try:
             prog_name = command[6:]
-            progs = get_response_from_socket("PROGS").split(",")
+            progs = get_response_from_socket('PROGS').split(',')
             if prog_name in progs:
-                tmpf = tempfile.NamedTemporaryFile('w+b', dir="/run/shm/protherm", prefix="prog_", suffix=".png", delete=False)
+                tmpf = tempfile.NamedTemporaryFile('w+b', dir=SHM_DIR, prefix='prog_', suffix='.png', delete=False)
                 tmpf.close
-                bot.sendChatAction(chat_id, 'upload_photo')
-                cmd = ["wget", "-O", tmpf.name, "http://localhost/prog_graph.php?p=%s.txt" % (prog_name)]
+                context.bot.send_chat_action(chat_id, CHATACTION_UPLOAD_PHOTO)
+                cmd = ['wget', '--quiet', '-O', tmpf.name, 'http://%s/prog_graph.php?p=%s.txt' % (PROTHERM_HOST, prog_name,)]
                 subprocess.call(cmd)
-                result = bot.sendPhoto(chat_id, open(tmpf.name, "rb"))
+                result = context.bot.send_photo(chat_id, open(tmpf.name, 'rb'))
+                logging.debug('Command /view: send_photo() returned: %s' % (result,))
             else:
-                msg = u"Non esiste il programma \"%s\"." % (prog_name)
-                bot.sendMessage(chat_id, msg)
-        except:
-            msg = u"Si è verificato un errore nel preparare il grafico del programma \"%s\"." % (prog_name)
-            logging.error(msg)
-            bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+                msg = 'Non esiste il programma "%s".' % (prog_name,)
+                update.message.reply_text(msg)
+        except Exception as ex:
+            logging.error('Exception in "/view %s" command: %s' % (prog_name, ex.__class__.__name__,))
+            msg = 'Si è verificato un errore nel preparare il grafico del programma "%s"' % (prog_name,)
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
         try:
             os.unlink(tmpf.name)
         except:
             pass
 
-    elif command == "/set":
-        stats = read_stats()
-        modes = get_response_from_socket("MODES").split(",")
-        msg  = u"Il programma attuale è \"%s\". " % (stats['current_mode'])
-        msg += u"Scegli quello da impostare tra quelli disponibili: %s." % (", ".join(modes))
-        keyboard = make_custom_keyboard("/set", modes)
-        keyboard.append(['/help'])
-        modes_keyboard = { 'keyboard': keyboard, 'resize_keyboard': True}
-        bot.sendMessage(chat_id, msg, reply_markup=modes_keyboard)
-
-    elif command.startswith("/set "):
-        if not chat_id in authorized_ids:
-            logging.error(u"Unauthorized '%s' command from %s, not in %s" % (command, chat_id, authorized_ids))
-            msg = u"Non sei autorizzato a cambiare programma al termostato. Chiedi all'amministratore di aggiungere il tuo ID (%d) all'elenco degli autorizzati." % (chat_id)
-            bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+    elif command == '/set':
+        try:
+            modes = get_response_from_socket('MODES').split(',')
+        except:
+            msg = "L'elenco dei programmi non è disponibie."
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
         else:
-            logging.info(u"Authorized '%s' command from %s" % (command, chat_id))
-            response = get_response_from_socket("SET %s" % (command[5:]))
-            msg = u"Ho inviato il comando al termostato che ha risposto: %s" %(response)
-            bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+            stats = read_stats()
+            msg  = 'Il programma attuale è "%s".' % (stats['current_mode'])
+            msg += 'Scegli quello da impostare tra quelli disponibili: %s.' % (', '.join(modes))
+            keyboard = make_custom_keyboard('/set', modes)
+            keyboard.append(['/help'])
+            modes_keyboard = { 'keyboard': keyboard, 'resize_keyboard': True}
+            update.message.reply_text(msg, reply_markup=modes_keyboard)
 
-    elif command.startswith("/exclude "):
+    elif command.startswith('/set '):
         if not chat_id in authorized_ids:
-            logging.error(u"Unauthorized '%s' command from %s, not in %s" % (command, chat_id, authorized_ids))
-            msg = u"Non sei autorizzato ad escludere qualcuno."
-            bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+            logging.error('Unauthorized "%s" command from %s, not in %s' % (command, chat_id, authorized_ids))
+            msg = "Non sei autorizzato a cambiare programma al termostato. Chiedi all'amministratore di aggiungere il tuo ID (%d) all'elenco degli autorizzati." % (chat_id,)
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
+        else:
+            logging.info('Authorized "%s" command from %s' % (command, chat_id))
+            response = get_response_from_socket('SET %s' % (command[5:],))
+            msg = 'Ho inviato il comando al termostato che ha risposto: %s' % (response,)
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
+
+    elif command.startswith('/exclude '):
+        if not chat_id in authorized_ids:
+            logging.error('Unauthorized %s command from %s, not in %s' % (command, chat_id, authorized_ids))
+            msg = 'Non sei autorizzato ad escludere qualcuno.'
+            update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
         else:
             try:
-                logging.info(u"Authorized '%s' command from %s" % (command, chat_id))
+                logging.info('Authorized %s command from %s' % (command, chat_id))
                 user_id = int(command[9:])
-                msg = u"Escludo l'utente %d dalla chat." % (user_id,)
-                bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+                msg = "Escludo l'utente %d dalla chat." % (user_id,)
+                update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
+                # Bot cannot ignore (or leave) private chats, just remove user_id from list.
                 del active_chats[user_id]
             except Exception as ex:
-                msg = u'Errore: %s' % (ex.__str__(),)
-                bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
-                logging.info(u"/exclude command failed with error %s" % (type(ex),))
-
+                msg = 'Eccezione: %s' % (ex.__class__.__name__,)
+                update.message.reply_text(msg, reply_markup=CUSTOM_KEYBOARD)
+                logging.error('Exception in /exclude command: %s' % (ex.__class__.__name__,))
     else:
-        msg = u"Non ho capito. Se non sai cosa fare prova il comando /help"
-        bot.sendMessage(chat_id, msg, reply_markup=custom_keyboard)
+        tmsg_handle(update, context)
+
+#-------------------------------------------------------------------------
+# Process generic messages and unknown commands.
+#-------------------------------------------------------------------------
+def tmsg_handle(update: Update, context: CallbackContext):
+    msg = 'Non ho capito. Se non sai cosa fare prova il comando /help'
+    update.message.reply_text( msg, reply_markup=CUSTOM_KEYBOARD)
 
 #-------------------------------------------------------------------------
 # Send an "I'm alive" message.
 #-------------------------------------------------------------------------
 def alive_message():
-    global bot, active_chats
-    me = bot.getMe()
-    if 'username' in me.keys() and 'id' in me.keys():
-        msg = u"Il bot Telegram è vivo; username = *%s*, id = *%s*" % (me['username'], me['id'])
+    global updater, active_chats
+    me = updater.bot.get_me()
+    if hasattr(me, 'username') and hasattr(me, 'id'):
+        msg = 'Il bot Telegram è vivo; username = *%s*, id = *%s*' % (me.username, me.id)
     else:
-        msg = u"Il bot Telegram è confuso: %s" % (me,)
+        msg = 'Il bot Telegram è confuso: %s' % (me,)
     logging.info(msg)
-    broadcast_message(bot, msg, active_chats.keys(), parse_mode='Markdown')
+    broadcast_message(msg, active_chats, parse_mode='Markdown')
 
 #-------------------------------------------------------------------------
 # Handle SIGTERM and SIGINT signals.
 #-------------------------------------------------------------------------
 def program_exit(signum, frame):
     global exit_program
-    logging.info("Received exit signal")
+    logging.info('Received exit signal: terminating in a while')
     exit_program = True
 
 #-------------------------------------------------------------------------
 # Handle SIGUSR1 signals.
 #-------------------------------------------------------------------------
 def program_usr1(signum, frame):
-    logging.info("Received USR1 signal")
+    logging.info('Received USR1 signal')
     alive_message()
 
 #-------------------------------------------------------------------------
@@ -418,37 +514,41 @@ def program_usr1(signum, frame):
 #-------------------------------------------------------------------------
 def save_runtime_data():
     global active_chats
+    logging.info('Saving runtime data to file %s' % (os.path.join(CACHE_DIR, DATA_FILE)))
     try:
-        logging.info("Saving runtime data to file %s" % (os.path.join(CACHE_DIR, DATA_FILE)))
         if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
-        with open(os.path.join(CACHE_DIR, DATA_FILE), 'w') as f:
+        with open(os.path.join(CACHE_DIR, DATA_FILE), 'wb') as f:
             pickle.dump(active_chats, f)
-    except:
-        pass
+    except Exception as ex:
+        logging.error('Exception in save_runtime_data(): %s' % (ex.__class__.__name__,))
 
 #-------------------------------------------------------------------------
 # Load runtime variables saved by save_runtime_data().
 #-------------------------------------------------------------------------
 def load_runtime_data():
     global active_chats
-    logging.info("Loading runtime data from file %s" % (os.path.join(CACHE_DIR, DATA_FILE)))
+    logging.info('Loading runtime data from file %s' % (os.path.join(CACHE_DIR, DATA_FILE)))
     try:
-        with open(os.path.join(CACHE_DIR, DATA_FILE)) as f:
+        with open(os.path.join(CACHE_DIR, DATA_FILE), 'rb') as f:
             active_chats = pickle.load(f)
-    except:
-        pass
+    except Exception as ex:
+        logging.error('Exception in load_runtime_data(): %s' % (ex.__class__.__name__,))
 
 #-------------------------------------------------------------------------
 # Main loop.
 #-------------------------------------------------------------------------
 def program_main():
-    global bot, exit_program, active_chats
+    global updater, exit_program, active_chats
 
     load_runtime_data()
 
-    logging.info(u"Starting Telegram BOT and setting message handler")
-    bot = telepot.Bot(BOT_TOKEN)
-    bot.message_loop(tmsg_handle)
+    logging.info('Starting Telegram BOT and setting message handler')
+    updater = Updater(BOT_TOKEN)
+    commands = ['exclude', 'graph', 'help', 'lcd', 'set', 'start', 'temp', 'view', 'who']
+    # Once an update is handled, all further handlers are ignored.
+    updater.dispatcher.add_handler(CommandHandler(commands, tcmd_handle))
+    updater.dispatcher.add_handler(MessageHandler(Filters.text, tmsg_handle))
+    updater.start_polling()
 
     current_mode = 'N/A'
     switch1 = 'N/A'
@@ -457,29 +557,29 @@ def program_main():
     while not exit_program:
 
         stats = read_stats()
-        logging.debug("Read stats = %s" % (stats))
+        logging.debug('Read stats = %s' % (stats))
 
         if stats['timestamp'] == None:
             # Failed to get ProTherm stats data.
-            msg = u'Impossibile leggere i dati dal termostato.'
+            msg = 'Impossibile leggere i dati dal termostato.'
             if read_stats_err_count < (STATS_ERR_MAX + 2):
                 read_stats_err_count += 1
         elif (int(time.time()) - stats['timestamp']) > STATS_STALE:
             # Stats data are stale.
-            msg = u'I dati forniti dal termostato non sono più aggiornati.'
+            msg = 'I dati forniti dal termostato non sono più aggiornati.'
             if read_stats_err_count < (STATS_ERR_MAX + 2):
                 read_stats_err_count += 1
         else:
             # Got stats data.
             if read_stats_err_count > STATS_ERR_MAX:
-                msg = u'La condizione di errore si è risolta.'
+                msg = 'La condizione di errore si è risolta.'
                 logging.info(msg)
-                broadcast_message(bot, msg, active_chats.keys())
+                broadcast_message(msg, active_chats)
             read_stats_err_count = 0
 
         if read_stats_err_count == STATS_ERR_MAX:
             logging.info(msg)
-            broadcast_message(bot, msg, active_chats.keys())
+            broadcast_message(msg, active_chats)
 
         if read_stats_err_count > 0 and read_stats_err_count < STATS_ERR_MAX:
             # Do nothing if read stats errors are too few.
@@ -488,20 +588,20 @@ def program_main():
 
         if current_mode != 'N/A' and current_mode != stats['current_mode']:
             logging.info("Read stats = %s" % (stats))
-            msg = u'Il termostato è passato dal programma "%s" a "%s".' % (current_mode, stats['current_mode'])
+            msg = 'Il termostato è passato dal programma "%s" a "%s".' % (current_mode, stats['current_mode'])
             logging.info(msg)
-            broadcast_message(bot, msg, active_chats.keys())
+            broadcast_message(msg, active_chats)
         current_mode = stats['current_mode']
 
         if switch1 != 'N/A' and switch1 != stats['switch1']:
             if stats['switch1'] == True:
-                msg = u"Il bruciatore si è acceso."
+                msg = 'Il bruciatore si è acceso.'
             elif stats['switch1'] == False:
-                msg = u"Il bruciatore si è spento."
+                msg = 'Il bruciatore si è spento.'
             else:
-                msg = u"Lo stato del bruciatore è diventato sconosciuto."
+                msg = 'Lo stato del bruciatore è diventato sconosciuto.'
             logging.info(msg)
-            broadcast_message(bot, msg, active_chats.keys())
+            broadcast_message(msg, active_chats)
         switch1 = stats['switch1']
 
         # Send "I'm alive" message.
@@ -516,6 +616,7 @@ def program_main():
 
         time.sleep(10)
 
+    updater.stop()
     save_runtime_data()
 
 #-------------------------------------------------------------------------
@@ -543,11 +644,18 @@ def log_open():
 #-------------------------------------------------------------------------
 # Entry point.
 #-------------------------------------------------------------------------
+if not os.path.exists(SHM_DIR):
+    logging.debug('Creating shared memory directory "%s"' % (SHM_DIR))
+    try:
+        os.mkdir(SHM_DIR, 0o755)
+    except:
+        logging.error('Cannot create shared memory directory "%s"' % (SHM_DIR))
+
 # Prepare daemon context.
 context = daemon.DaemonContext(
     working_directory = '/tmp',
     umask = 0o002,
-    pidfile = daemon.pidlockfile.TimeoutPIDLockFile(
+    pidfile=daemon.pidfile.TimeoutPIDLockFile(
         path = PID_FILE,
         acquire_timeout = 2),
     signal_map = {
@@ -563,7 +671,7 @@ if BE_DAEMON:
             with context:
                 log_open()
                 log_opened = True
-                logging.info("Running as daemon")
+                logging.info('Running as daemon')
                 program_main()
         except lockfile.LockTimeout:
             if not log_opened: log_open()
@@ -571,16 +679,19 @@ if BE_DAEMON:
             break
         except Exception as ex:
             if not log_opened: log_open()
-            logging.warning('Trying to recover from exception')
-            logging.error("type %s: %s" % (type(ex), ex.__str__()))
+            logging.warning('Daemon main loop: trying to recover from exception')
+            logging.error('Exception %s: %s' % (ex.__class__.__name__, ex.__str__()))
         except:
             if not log_opened: log_open()
-            logging.error('Fatal exception: %s' % (sys.exc_info()[0],))
+            logging.error('Fatal exception: %s' % (ex.__class__.__name__,))
             break
 
 else:
     log_open()
-    logging.info("Running in foreground")
+    logging.info('Running in foreground')
+    signal.signal(signal.SIGINT,  program_exit)
+    signal.signal(signal.SIGTERM, program_exit)
+    signal.signal(signal.SIGUSR1, program_usr1)
     program_main()
 
-logging.info("Exiting program")
+logging.info('Exiting program')
