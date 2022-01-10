@@ -90,7 +90,6 @@ import ntplib
 import os, re, sys, tempfile, time
 import socket
 import socketserver
-#import yappi
 
 import RPi.GPIO as GPIO
 
@@ -415,16 +414,13 @@ class lcd_pcd8544:
         # Threading semaphore to access the LCD.
         self.sema = threading.BoundedSemaphore()
         self.show_image()
+        self.redraw_network_data = True
 
     def reset(self, force_show=False):
-        # TODO: Don't use global variables.
-        global thermostat
         # Sometimes the LCD gets corrupted (power problem?): workaround.
         if self.enabled:
             logging.debug('Reset LCD display')
-            # Unset network data to force display refresh.
-            thermostat.network_addr = None
-            thermostat.network_strength = None
+            self.redraw_network_data = True
             self.pcd8544.reset()
             self.pcd8544.bias = cfg.LCD_BIAS
             self.pcd8544.contrast = cfg.LCD_CONTRAST
@@ -485,23 +481,19 @@ class lcd_pcd8544_old:
         # Threading semaphore to access the LCD.
         self.sema = threading.BoundedSemaphore()
         self.show_image()
+        self.redraw_network_data = True
 
     def reset(self, force_show=False):
-        # TODO: Don't use global variables.
-        global thermostat
         # Sometimes the LCD gets corrupted (power problem?): workaround.
         if self.enabled:
             logging.debug('Reset LCD display')
-            # Unset network data to force display refresh.
-            thermostat.network_addr = None
-            thermostat.network_strength = None
+            self.redraw_network_data = True
             self.pcd8544.begin(contrast=cfg.LCD_CONTRAST)
             self.pcd8544.clear()
             if force_show:
                 self.pcd8544.display()
 
     def show_image(self):
-        #self.image = Image.open('/root/happycat_lcd.ppm').convert('1')
         if self.enabled:
             with self.sema:
                 self.pcd8544.image(self.image)
@@ -869,7 +861,7 @@ def network_status_update():
 
 
 #-------------------------------------------------------------------------
-# Show network data: IP address, signal strength diagram, etc.
+# Show network data on LCD: IP address, signal strength diagram, etc.
 #-------------------------------------------------------------------------
 def display_network(redraw=True):
     global cfg, lcd, thermostat
@@ -878,6 +870,13 @@ def display_network(redraw=True):
     old_addr     = thermostat.network_addr
     old_strength = thermostat.network_strength
     network_status_update()
+
+    # A redraw of network data is forced, e.g. after LCD reset.
+    if lcd.redraw_network_data:
+        old_iface    = None
+        old_addr     = None
+        old_strength = None
+        lcd.redraw_network_data = False
 
     # IP address.
     if thermostat.network_addr != old_addr:
@@ -1213,7 +1212,6 @@ def program_main():
             tcp_server = None
 
 
-    #yappi.start()
     while not thermostat.exit_program:
         logging.debug('Idle in main loop')
         ntp_check_sync()
@@ -1242,13 +1240,6 @@ def program_main():
 
     logging.info('Cleaning GPIO settings')
     GPIO.cleanup()
-
-    ## Retrieve thread stats by their thread id (given by yappi)
-    #yappi.stop()
-    #threads = yappi.get_thread_stats()
-    #for thread in threads:
-    #    print("\n===== Function stats for (%s) (%d)" % (thread.name, thread.id))
-    #    yappi.get_func_stats(ctx_id=thread.id).print_all()
 
 
 #-------------------------------------------------------------------------
