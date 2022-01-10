@@ -551,7 +551,7 @@ class socket_tcp_handler(socketserver.StreamRequestHandler):
     def handle(self):
         try:
             self.data = self.request.recv(1024).strip().decode('utf-8')
-            msg = 'TCP client %s sent command "%s"' % (self.client_address[0], self.data)
+            msg = 'Received command "%s" from TCP client %s' % (self.data, self.client_address[0])
             logging.info(msg)
             if self.data.upper() == 'STATS':
                 self.request.sendall(get_stats().encode('utf-8'))
@@ -566,9 +566,9 @@ class socket_tcp_handler(socketserver.StreamRequestHandler):
                 if requested_mode in MODES.values():
                     # Search MODES dictionary key by value.
                     n = dict((v, k) for k, v in MODES.items())[requested_mode]
-                    msg = u"Mode '%s' = '%d'" % (requested_mode, n)
+                    msg = 'Mode "%s" = "%d"' % (requested_mode, n)
                     logging.info(msg)
-                    reply = u"OK: Setting mode \"%s\"" % (requested_mode,)
+                    reply = 'OK: Setting mode "%s"' % (requested_mode,)
                     self.request.sendall(reply.encode('utf-8'))
                     mode_change(n)
                 else:
@@ -808,8 +808,9 @@ def carrier_status(ifname):
         with open(IFACE_CARRIER % (ifname,), 'r') as f:
            carrier = int(f.readline().strip())
     except Exception as ex:
-        logging.error('Exception reading interface carrier: %s' % (ex.__class__.__name__,))
-    logging.debug('Carrier of interface %s is %s' % (ifname, carrier))
+        logging.debug('Exception reading interface carrier: %s' % (ex.__class__.__name__,))
+    else:
+        logging.debug('Carrier of interface %s is %s' % (ifname, carrier))
     return carrier
 
 
@@ -990,6 +991,7 @@ def button1_handler(gpio):
 
 #-------------------------------------------------------------------------
 # Exec by timer: update temp sensor (gauge1) and relay switch (switch1).
+# Update the LCD content but don't redraw it: the clock update will do.
 #-------------------------------------------------------------------------
 def update_thermostat():
     global cfg, thermostat
