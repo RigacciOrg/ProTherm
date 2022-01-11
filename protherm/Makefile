@@ -37,6 +37,7 @@ install-sysvinit:
 .PHONY: install-systemd
 install-systemd:
 	install -m 644 -o root -g root -D systemd-unit /etc/systemd/system/$(TARGET).service
+	install -m 644 -o root -g root -D udev-rule /etc/udev/rules.d/$(TARGET)-spidev.rules
 	systemctl daemon-reload
 
 .PHONY: uninstall
@@ -44,6 +45,7 @@ uninstall:
 	-rm $(SBINDIR)/$(TARGET)
 	-rm /etc/init.d/$(TARGET)
 	-rm /etc/systemd/system/$(TARGET).service
+	-rm /etc/udev/rules.d/$(TARGET)-spidev.rules
 	-rm /etc/$(CFGFILE)
 	-rm -f $(addprefix $(ICONDIR)/, $(ICON_FILES))
 	-rm -f $(addprefix $(FONTDIR)/, $(FONT_FILES))

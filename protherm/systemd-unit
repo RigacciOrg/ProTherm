@@ -2,6 +2,11 @@
 Description=Programmable Thermostat Service
 After=syslog.target
 
+# Wait for spidev0.0 systemd device to be available,
+# the systemd device should be created using an udev rule.
+After=dev-spidev0.0.device
+Requires=dev-spidev0.0.device
+
 [Service]
 Type=simple
 WorkingDirectory=/tmp/

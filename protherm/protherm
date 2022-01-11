@@ -420,14 +420,13 @@ class lcd_pcd8544:
         # Sometimes the LCD gets corrupted (power problem?): workaround.
         if self.enabled:
             logging.debug('Reset LCD display')
-            self.redraw_network_data = True
-            self.pcd8544.reset()
             self.pcd8544.bias = cfg.LCD_BIAS
             self.pcd8544.contrast = cfg.LCD_CONTRAST
             self.pcd8544.fill(self.white)
             self.pcd8544.invert = True
             if force_show:
                 self.pcd8544.show()
+            self.redraw_network_data = True
 
     def show_image(self):
         if self.enabled:
@@ -487,11 +486,11 @@ class lcd_pcd8544_old:
         # Sometimes the LCD gets corrupted (power problem?): workaround.
         if self.enabled:
             logging.debug('Reset LCD display')
-            self.redraw_network_data = True
             self.pcd8544.begin(contrast=cfg.LCD_CONTRAST)
             self.pcd8544.clear()
             if force_show:
                 self.pcd8544.display()
+            self.redraw_network_data = True
 
     def show_image(self):
         if self.enabled:
@@ -1067,6 +1066,7 @@ def program_hup(signum, frame):
     # handler (stdout, file or syslog) for a running process.
     log_handler = logging.getLogger().handlers[0]
     log_handler.setFormatter(logging.Formatter(cfg.LOG_FORMAT, cfg.LOG_FMT_DATE))
+    logging.getLogger().setLevel(cfg.LOG_LEVEL)
     read_heating_programs()
     lcd.reset()
 

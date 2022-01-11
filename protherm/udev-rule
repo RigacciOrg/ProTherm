@@ -1,0 +1,2 @@
+# Create a systemd device "dev-spidev0.0.device" to trigger the start of the service.
+SUBSYSTEM=="spidev", KERNEL=="spidev0.0", TAG+="systemd"
