@@ -1,2 +1,4 @@
-# Create a systemd device "dev-spidev0.0.device" to trigger the start of the service.
-SUBSYSTEM=="spidev", KERNEL=="spidev0.0", TAG+="systemd"
+# Inform systemd when the kernel device /dev/spidev0.0 becomes available.
+# Systemd will create a systemd device named "dev-spidev0.0.device", which
+# can be used to trigger the start of a service.
+ACTION=="add", SUBSYSTEM=="spidev", KERNEL=="spidev0.0", TAG+="systemd"
