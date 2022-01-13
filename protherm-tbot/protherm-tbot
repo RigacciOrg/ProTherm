@@ -679,6 +679,11 @@ if not os.path.exists(SHM_DIR):
     except:
         logging.error('Cannot create shared memory directory "%s"' % (SHM_DIR))
 
+# If required: run in foreground.
+if len(sys.argv) > 1:
+    if sys.argv[1] == '-f':
+        BE_DAEMON = False
+
 # Prepare daemon context.
 context = daemon.DaemonContext(
     working_directory = '/tmp',
