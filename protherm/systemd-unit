@@ -9,6 +9,8 @@ Requires=dev-spidev0.0.device
 Type=simple
 WorkingDirectory=/tmp/
 ExecStart=/usr/local/sbin/protherm -f
+Restart=always
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target

@@ -6,7 +6,7 @@ After=syslog.target
 Type=simple
 WorkingDirectory=/tmp/
 ExecStart=/usr/local/sbin/protherm-tbot -f
-Restart= always
+Restart=always
 RestartSec=30
 
 [Install]
