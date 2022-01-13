@@ -474,12 +474,29 @@ def tcmd_handle(update: Update, context: CallbackContext):
     else:
         tmsg_handle(update, context)
 
+
 #-------------------------------------------------------------------------
 # Process generic messages and unknown commands.
 #-------------------------------------------------------------------------
 def tmsg_handle(update: Update, context: CallbackContext):
     msg = 'Non ho capito. Se non sai cosa fare prova il comando /help'
     update.message.reply_text( msg, reply_markup=CUSTOM_KEYBOARD)
+
+
+#-------------------------------------------------------------------------
+# Called on Telegram Dispatcher errors.
+#-------------------------------------------------------------------------
+def telegram_error_handle(update: Update, context: CallbackContext):
+    error_type = 'Unknown'
+    error_message = 'Unknown'
+    try:
+        error_type = context.error.__class__.__name__
+        error_message = context.error.message
+    except:
+        pass
+    logging.error('telegram.ext.Dispatcher error: %s' % (error_type,))
+    logging.debug('telegram.ext.Dispatcher error message: %s' % (error_message,))
+
 
 #-------------------------------------------------------------------------
 # Send an "I'm alive" message.
@@ -541,14 +558,24 @@ def program_main():
     global updater, exit_program, active_chats
 
     load_runtime_data()
+    commands = ['exclude', 'graph', 'help', 'lcd', 'set', 'start', 'temp', 'view', 'who']
 
     logging.info('Starting Telegram BOT and setting message handler')
-    updater = Updater(BOT_TOKEN)
-    commands = ['exclude', 'graph', 'help', 'lcd', 'set', 'start', 'temp', 'view', 'who']
-    # Once an update is handled, all further handlers are ignored.
-    updater.dispatcher.add_handler(CommandHandler(commands, tcmd_handle))
-    updater.dispatcher.add_handler(MessageHandler(Filters.text, tmsg_handle))
-    updater.start_polling()
+    try:
+        updater = Updater(BOT_TOKEN)
+        # Add handlers for received updates.
+        # Once an update is handled, all further handlers are ignored.
+        updater.dispatcher.add_handler(CommandHandler(commands, tcmd_handle))
+        updater.dispatcher.add_handler(MessageHandler(Filters.text, tmsg_handle))
+        updater.dispatcher.add_error_handler(telegram_error_handle)
+        updater.start_polling()
+    except Exception as ex:
+        logging.error('Exception starting BOT: %s' % (ex.__class__.__name__,))
+        return 1
+
+
+
+
 
     current_mode = 'N/A'
     switch1 = 'N/A'
@@ -618,6 +645,7 @@ def program_main():
 
     updater.stop()
     save_runtime_data()
+    return 0
 
 #-------------------------------------------------------------------------
 # Initialize logging.
@@ -666,25 +694,24 @@ context = daemon.DaemonContext(
 
 if BE_DAEMON:
     log_opened = False
+    exit_code = 0
     while not exit_program:
         try:
             with context:
                 log_open()
                 log_opened = True
                 logging.info('Running as daemon')
-                program_main()
+                exit_code = program_main()
         except lockfile.LockTimeout:
             if not log_opened: log_open()
             logging.error('Cannot lock PID file: %s' % (PID_FILE,))
+            exit_code = 1
             break
         except Exception as ex:
             if not log_opened: log_open()
             logging.warning('Daemon main loop: trying to recover from exception')
             logging.error('Exception %s: %s' % (ex.__class__.__name__, ex.__str__()))
-        except:
-            if not log_opened: log_open()
-            logging.error('Fatal exception: %s' % (ex.__class__.__name__,))
-            break
+            time.sleep(10)
 
 else:
     log_open()
@@ -692,6 +719,7 @@ else:
     signal.signal(signal.SIGINT,  program_exit)
     signal.signal(signal.SIGTERM, program_exit)
     signal.signal(signal.SIGUSR1, program_usr1)
-    program_main()
+    exit_code = program_main()
 
 logging.info('Exiting program')
+sys.exit(exit_code)
