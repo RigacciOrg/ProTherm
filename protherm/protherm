@@ -551,7 +551,7 @@ class socket_tcp_handler(socketserver.StreamRequestHandler):
         try:
             self.data = self.request.recv(1024).strip().decode('utf-8')
             msg = 'Received command "%s" from TCP client %s' % (self.data, self.client_address[0])
-            logging.info(msg)
+            logging.debug(msg)
             if self.data.upper() == 'STATS':
                 self.request.sendall(get_stats().encode('utf-8'))
             elif self.data.upper() == 'MODES':
