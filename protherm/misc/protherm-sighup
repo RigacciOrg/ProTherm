@@ -1,0 +1,14 @@
+#!/bin/sh
+
+SIGNAL='HUP'
+
+if [ -x /usr/bin/systemctl ]; then
+    # Use systemd, if present.
+    systemctl kill --signal="SIG${SIGNAL}" protherm
+else
+    # Otherwise try PID file.
+    PID="$(cat /var/run/protherm.pid)"
+    if [ -n "$PID" ]; then
+        kill -"${SIGNAL}" "$PID"
+    fi
+fi

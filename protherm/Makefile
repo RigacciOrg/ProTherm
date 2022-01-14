@@ -9,6 +9,7 @@ CFGFILE = $(TARGET).cfg
 ICON_FILES := $(shell cd icons; echo *.ppm)
 FONT_FILES := $(shell cd fonts; echo *.ttf)
 PROG_FILES = PROG1.txt PROG2.txt PROG3.txt
+UTILS_BIN  = protherm-sighup protherm-sigusr1
 
 .PHONY: all
 all: ;
@@ -19,6 +20,7 @@ install: install-bin install-files install-config
 .PHONY: install-bin
 install-bin:
 	install -m 755 -o root -g root -D $(TARGET) $(SBINDIR)/$(TARGET)
+	install -m 755 -o root -g root -D -t $(SBINDIR) $(addprefix misc/, $(UTILS_BIN))
 
 .PHONY: install-files
 install-files:
@@ -50,3 +52,4 @@ uninstall:
 	-rm -f $(addprefix $(ICONDIR)/, $(ICON_FILES))
 	-rm -f $(addprefix $(FONTDIR)/, $(FONT_FILES))
 	-rm -f $(addprefix $(LIBDIR)/, $(PROG_FILES))
+	-rm -f $(addprefix $(SBINDIR)/, $(UTILS_BIN))

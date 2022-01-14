@@ -1257,14 +1257,13 @@ if len(sys.argv) > 1:
     if sys.argv[1] == '-f':
         cfg.BE_DAEMON = False
 
-# Prepare daemon context.
-# TODO: Check why acquire_timeout does not work: measured 3.5 minutes
+# Prepare the daemon context.
 context = daemon.DaemonContext(
     working_directory = '/tmp',
     umask=0o002,
     pidfile=daemon.pidfile.TimeoutPIDLockFile(
         path=PID_FILE,
-        acquire_timeout=2),
+        acquire_timeout=10),
     signal_map = {
         signal.SIGHUP:  program_hup,
         signal.SIGINT:  program_exit,
@@ -1277,6 +1276,11 @@ if cfg.BE_DAEMON:
     log_opened = False
     try:
         with context:
+            # From this point: stdout is discnnected, PID file is
+            # created, the program will fork. Logging must be
+            # initialized now to be functional in child process.
+            # The rest of the program will run in child context,
+            # including exceptions.
             log_open()
             log_opened = True
             logging.info('Running as daemon')
@@ -1286,10 +1290,12 @@ if cfg.BE_DAEMON:
                 lcd = lcd_pcd8544(cfg)
             program_main()
     except Exception as ex:
+        # If fork failed, try to initialize logging anyway.
         if not log_opened:
             log_open()
         logging.error('Exception type %s: %s' % (ex.__class__.__name__, ex.__str__()))
 else:
+    # Do not daemonize, initialize logging in this context.
     log_open()
     if cfg.OLD_LCD_LIBRARY:
         lcd = lcd_pcd8544_old(cfg)
